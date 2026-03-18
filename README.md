@@ -34,13 +34,7 @@ Seecode is a high-performance, feature-rich Chrome extension designed for develo
 > Add your extension screenshots here to showcase the UI.
 
 ### Main Editor View
-![Main Editor Placeholder](https://via.placeholder.com/800x450?text=Main+Editor+View+with+Multi-Language+Support)
-
-### JSON Linting & Formatting
-![JSON Linting Placeholder](https://via.placeholder.com/800x450?text=Smart+JSON+Linting+and+Formatting)
-
-### Floating Note Mode
-![Floating Note Placeholder](https://via.placeholder.com/400x300?text=Floating+Sticky+Note)
+<img width="902" height="911" alt="image" src="https://github.com/user-attachments/assets/9eceb410-c8f7-48eb-9c5c-3592014ba641" />
 
 ---
 
