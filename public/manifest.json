@@ -1,0 +1,19 @@
+{
+  "name": "Seecode",
+  "version": "3.0.1",
+  "manifest_version": 3,
+  "description": "A robust code editor extension with multi-language support, intelligent layout, and specialized JSON formatting.",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Seecode"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+} 

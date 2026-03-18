@@ -1,0 +1,8 @@
+{
+  "name": "Gemini Chrome Extension Starter",
+  "description": "A high-performance Chrome extension boilerplate featuring React, Tailwind CSS, and Google Gemini API integration.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
