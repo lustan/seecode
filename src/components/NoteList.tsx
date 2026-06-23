@@ -330,7 +330,10 @@ export default function NoteList({
         style={{
           padding: '7px 10px',
           paddingLeft: indent ? '26px' : '10px',
-          borderRadius: '8px',
+          borderTopLeftRadius: isActive ? 0 : 8,
+          borderBottomLeftRadius: isActive ? 0 : 8,
+          borderTopRightRadius: 8,
+          borderBottomRightRadius: 8,
           marginBottom: '3px',
           cursor: 'pointer',
           fontSize: '12px',
@@ -636,17 +639,6 @@ export default function NoteList({
                     >
                       {folder.name}
                     </span>
-                  )}
-                  {!editingFolderId && folderNotes.length > 0 && (
-                    <span style={{
-                      fontSize: 10,
-                      color: colors.textSec,
-                      background: theme === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
-                      padding: '1px 6px',
-                      borderRadius: 8,
-                      fontWeight: 700,
-                      flexShrink: 0
-                    }}>{folderNotes.length}</span>
                   )}
                 </div>
 
