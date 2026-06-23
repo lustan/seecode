@@ -16,9 +16,17 @@ export interface Note {
   title: string;
   content: string;
   language?: SupportedLanguage;
+  folderId?: string;
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  expanded?: boolean;
 }
 
 const STORAGE_KEY = 'plexcodeeditor_notes';
+const FOLDERS_KEY = 'plexcodeeditor_folders';
 const SETTINGS_KEY = 'plexcodeeditor_settings';
 const ACTIVE_NOTE_KEY = 'plexcodeeditor_active_note_id';
 
@@ -41,6 +49,16 @@ function loadNotes(): Promise<Note[]> {
 
 function saveNotes(notes: Note[]) {
   chrome.storage.local.set({ [STORAGE_KEY]: notes });
+}
+
+function loadFolders(): Promise<Folder[]> {
+  return new Promise(resolve => {
+    chrome.storage.local.get([FOLDERS_KEY], result => resolve(result[FOLDERS_KEY] || []));
+  });
+}
+
+function saveFolders(folders: Folder[]) {
+  chrome.storage.local.set({ [FOLDERS_KEY]: folders });
 }
 
 function loadSettings(): Promise<{ theme: 'dark' | 'light'; fontSize: number }> {
@@ -74,6 +92,7 @@ function getActiveIdFromQuery(): string | null {
 
 export default function App({ isPopup = false }) {
   const [notes, setNotes] = useState<Note[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -134,8 +153,9 @@ export default function App({ isPopup = false }) {
       setFontSize(s.fontSize);
     });
 
-    Promise.all([loadNotes(), loadActiveNoteId()]).then(([n, storedActiveId]) => {
+    Promise.all([loadNotes(), loadActiveNoteId(), loadFolders()]).then(([n, storedActiveId, f]) => {
       setNotes(n);
+      setFolders(f);
       const queryActiveId = getActiveIdFromQuery();
       const candidateIds = [queryActiveId, storedActiveId];
       const restoredActiveId = candidateIds.find(id => id && n.some(note => note.id === id)) || null;
@@ -152,6 +172,7 @@ export default function App({ isPopup = false }) {
   }, []);
 
   useEffect(() => { saveNotes(notes); }, [notes]);
+  useEffect(() => { saveFolders(folders); }, [folders]);
   useEffect(() => { saveActiveNoteId(activeId); }, [activeId]);
 
   useEffect(() => {
@@ -165,12 +186,49 @@ export default function App({ isPopup = false }) {
 
   const activeNote = notes.find(n => n.id === activeId);
 
-  const handleAdd = () => {
+  const handleAdd = (options: { folderId?: string; language?: SupportedLanguage; title?: string } = {}) => {
+    const { folderId, language, title } = options;
     const id = Date.now().toString();
-    const newNote: Note = { id, title: `Note ${notes.length + 1}`, content: '' };
+    const newNote: Note = {
+      id,
+      title: title || `Note ${notes.length + 1}`,
+      content: '',
+      folderId,
+      language
+    };
     setNotes([...notes, newNote]);
     setActiveId(id);
     setEditingId(id);
+    if (folderId) {
+      setFolders(folders.map(f => f.id === folderId ? { ...f, expanded: true } : f));
+    }
+  };
+
+  const handleAddFolder = () => {
+    const id = `folder-${Date.now()}`;
+    const newFolder: Folder = { id, name: `Folder ${folders.length + 1}`, expanded: true };
+    setFolders([...folders, newFolder]);
+  };
+
+  const handleRenameFolder = (id: string, newName: string) => {
+    setFolders(folders.map(f => f.id === id ? { ...f, name: newName.trim() || 'Untitled' } : f));
+  };
+
+  const handleDeleteFolder = (id: string) => {
+    // Move folder's notes back to root, then remove the folder
+    setNotes(notes.map(n => n.folderId === id ? { ...n, folderId: undefined } : n));
+    setFolders(folders.filter(f => f.id !== id));
+  };
+
+  const handleToggleFolder = (id: string) => {
+    setFolders(folders.map(f => f.id === id ? { ...f, expanded: !f.expanded } : f));
+  };
+
+  const handleMoveNote = (noteId: string, folderId: string | undefined) => {
+    setNotes(notes.map(n => n.id === noteId ? { ...n, folderId } : n));
+    if (folderId) {
+      setFolders(folders.map(f => f.id === folderId ? { ...f, expanded: true } : f));
+    }
   };
 
   const handleRename = (id: string, newTitle: string) => {
@@ -270,9 +328,15 @@ export default function App({ isPopup = false }) {
 
       <NoteList
         notes={notes}
+        folders={folders}
         activeId={activeId || ''}
         theme={theme}
         onAdd={handleAdd}
+        onAddFolder={handleAddFolder}
+        onRenameFolder={handleRenameFolder}
+        onDeleteFolder={handleDeleteFolder}
+        onToggleFolder={handleToggleFolder}
+        onMoveNote={handleMoveNote}
         onDelete={(id) => setNotes(notes.filter(n => n.id !== id))}
         onRename={handleRename}
         onSelect={setActiveId}
