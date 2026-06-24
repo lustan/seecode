@@ -17,6 +17,8 @@ import { SupportedLanguage, detectLanguage, getSupportedLanguages, getLanguageDi
 import DiffViewer from './DiffViewer';
 import type { Note } from '../App';
 
+declare const chrome: any;
+
 const Icons = {
   Clear: () => (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
@@ -93,10 +95,11 @@ interface Props {
   autoDetectLanguage?: boolean;
   allNotes?: Note[];
   activeNoteId?: string | null;
+  openCompareTick?: number;
   showAlert?: (o: any) => void;
 }
 
-export default function MultiLanguageEditor({ value, onChange, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, showAlert }: Props) {
+export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, openCompareTick, showAlert }: Props) {
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
   const [showDiff, setShowDiff] = useState(false);
@@ -114,6 +117,13 @@ export default function MultiLanguageEditor({ value, onChange, theme = 'dark', f
   const languageMenuRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
   const getEditorView = useCallback((): EditorView | null => editorRef.current?.view || null, []);
+
+  // External trigger: parent flips openCompareTick → open the diff viewer.
+  useEffect(() => {
+    if (openCompareTick && openCompareTick > 0 && !isPopup) {
+      setShowDiff(true);
+    }
+  }, [openCompareTick, isPopup]);
 
   useEffect(() => {
     if (language) {
@@ -654,7 +664,28 @@ export default function MultiLanguageEditor({ value, onChange, theme = 'dark', f
           <button className="ed-btn" style={btnStyle} onClick={handleCopy} title="Copy All"><Icons.Copy /></button>
           <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title="Toggle Wrap"><Icons.Wrap /></button>
           {allNotes && allNotes.length > 0 && (
-            <button className="ed-btn" style={btnStyle} onClick={() => setShowDiff(true)} title="Compare with another file"><Icons.Compare /></button>
+            <button
+              className="ed-btn"
+              style={btnStyle}
+              onClick={() => {
+                if (isPopup) {
+                  // In popup mode, open the full editor page with compare flag — popup is too small for diff UX
+                  try {
+                    const url = (chrome as any).runtime.getURL('editor.html') +
+                      `?compare=1${activeNoteId ? `&activeId=${activeNoteId}` : ''}`;
+                    (chrome as any).tabs.create({ url });
+                    window.close();
+                  } catch {
+                    setShowDiff(true);
+                  }
+                } else {
+                  setShowDiff(true);
+                }
+              }}
+              title={isPopup ? 'Compare in new tab' : 'Compare with another file'}
+            >
+              <Icons.Compare />
+            </button>
           )}
           <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title="Clear All"><Icons.Clear /></button>
         </div>

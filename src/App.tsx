@@ -90,6 +90,11 @@ function getActiveIdFromQuery(): string | null {
   return params.get('activeId');
 }
 
+function getCompareFromQuery(): boolean {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('compare') === '1';
+}
+
 export default function App({ isPopup = false }) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -100,6 +105,7 @@ export default function App({ isPopup = false }) {
   const [alertState, setAlertState] = useState<any>(null);
   const [toastState, setToastState] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [openCompareTick, setOpenCompareTick] = useState(0);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -160,6 +166,16 @@ export default function App({ isPopup = false }) {
       const candidateIds = [queryActiveId, storedActiveId];
       const restoredActiveId = candidateIds.find(id => id && n.some(note => note.id === id)) || null;
       setActiveId(restoredActiveId || (n[0]?.id ?? null));
+      if (!isPopup && getCompareFromQuery()) {
+        // strip the flag from the URL so a reload doesn't reopen the diff
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.delete('compare');
+          window.history.replaceState({}, '', url.toString());
+        } catch {}
+        // bump tick to trigger the editor to open compare on next render
+        setOpenCompareTick(t => t + 1);
+      }
     });
 
     const handleOutsideClick = (e: MouseEvent) => {
@@ -454,6 +470,7 @@ export default function App({ isPopup = false }) {
               onLanguageChange={(lang) => setNoteLanguage(activeId!, lang)}
               allNotes={notes}
               activeNoteId={activeId}
+              openCompareTick={openCompareTick}
               showAlert={showAlert}
             />
           ) : (

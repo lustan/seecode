@@ -167,6 +167,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
+  // Collapse unchanged fragments — IDEA-style
+  const [collapseUnchanged, setCollapseUnchanged] = useState(true);
+  const [expandedFolds, setExpandedFolds] = useState<Set<string>>(new Set());
+  const CONTEXT_LINES = 3;
+  const MIN_FOLD = CONTEXT_LINES * 2 + 2; // only collapse runs longer than this
+
   const [currentChunkIdx, setCurrentChunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
@@ -190,6 +196,49 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const chunks = useMemo(() => buildChunks(rows), [rows]);
 
+  // Compute foldable regions: maximal runs of equal rows with CONTEXT_LINES of context
+  // preserved at each end (or at the file start/end). Only collapse if the resulting
+  // hidden run is at least 1 line.
+  type Fold = { start: number; end: number; hiddenStart: number; hiddenEnd: number; key: string };
+  const folds = useMemo<Fold[]>(() => {
+    if (!collapseUnchanged) return [];
+    const out: Fold[] = [];
+    let i = 0;
+    while (i < rows.length) {
+      if (rows[i].kind === 'equal') {
+        const start = i;
+        while (i < rows.length && rows[i].kind === 'equal') i++;
+        const end = i - 1;
+        const isFileStart = start === 0;
+        const isFileEnd = end === rows.length - 1;
+        const ctxBefore = isFileStart ? 0 : CONTEXT_LINES;
+        const ctxAfter = isFileEnd ? 0 : CONTEXT_LINES;
+        const hiddenStart = start + ctxBefore;
+        const hiddenEnd = end - ctxAfter;
+        if (hiddenEnd >= hiddenStart && (hiddenEnd - hiddenStart + 1) >= 1 &&
+            (end - start + 1) >= (ctxBefore + ctxAfter + 1)) {
+          out.push({
+            start, end, hiddenStart, hiddenEnd,
+            key: `${hiddenStart}-${hiddenEnd}`
+          });
+        }
+      } else {
+        i++;
+      }
+    }
+    return out;
+  }, [rows, collapseUnchanged]);
+
+  // Map: rowIdx → fold it belongs to (only for actually-hidden indices); also map fold start position
+  const foldAtRow = useMemo<Map<number, Fold>>(() => {
+    const m = new Map<number, Fold>();
+    folds.forEach(f => {
+      if (expandedFolds.has(f.key)) return;
+      for (let i = f.hiddenStart; i <= f.hiddenEnd; i++) m.set(i, f);
+    });
+    return m;
+  }, [folds, expandedFolds]);
+
   // reset chunk index whenever chunks change
   useEffect(() => {
     setCurrentChunkIdx(chunks.length > 0 ? 0 : -1);
@@ -204,12 +253,17 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const scrollToChunk = useCallback((idx: number) => {
     if (idx < 0 || idx >= chunks.length) return;
-    const el = rowRefs.current[chunks[idx].start];
-    if (!el || !diffScrollRef.current) return;
-    const scroller = diffScrollRef.current;
-    const elTop = el.offsetTop;
-    const desired = elTop - scroller.clientHeight / 3;
-    scroller.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+    const targetRow = chunks[idx].start;
+    // chunk rows are non-equal, so they are never inside a fold — no expansion needed.
+    // requestAnimationFrame waits one paint so refs are up to date after any state changes.
+    requestAnimationFrame(() => {
+      const el = rowRefs.current[targetRow];
+      if (!el || !diffScrollRef.current) return;
+      const scroller = diffScrollRef.current;
+      const elTop = el.offsetTop;
+      const desired = elTop - scroller.clientHeight / 3;
+      scroller.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+    });
   }, [chunks]);
 
   const goPrevDiff = useCallback(() => {
@@ -416,7 +470,42 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
       );
     }
-    return rows.map((r, idx) => {
+    const out: React.ReactNode[] = [];
+    let idx = 0;
+    while (idx < rows.length) {
+      const fold = foldAtRow.get(idx);
+      if (fold && idx === fold.hiddenStart) {
+        // Render the fold bar (single row in the layout)
+        const hiddenCount = fold.hiddenEnd - fold.hiddenStart + 1;
+        out.push(
+          <div
+            key={`fold-${fold.key}`}
+            ref={el => { rowRefs.current[idx] = el; }}
+            className="dv-fold-bar"
+            onClick={() => {
+              setExpandedFolds(prev => {
+                const n = new Set(prev);
+                n.add(fold.key);
+                return n;
+              });
+            }}
+            title={`Expand ${hiddenCount} unchanged line${hiddenCount === 1 ? '' : 's'}`}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="7 13 12 18 17 13"></polyline>
+              <polyline points="7 6 12 11 17 6"></polyline>
+            </svg>
+            <span className="dv-fold-text">
+              {hiddenCount} unchanged line{hiddenCount === 1 ? '' : 's'}
+            </span>
+            <span className="dv-fold-hint">click to expand</span>
+          </div>
+        );
+        idx = fold.hiddenEnd + 1;
+        continue;
+      }
+
+      const r = rows[idx];
       const segs = r.kind === 'modify' && r.leftText != null && r.rightText != null
         ? inlineDiff(r.leftText, r.rightText)
         : null;
@@ -426,16 +515,16 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         currentChunkIdx < chunks.length &&
         chunks[currentChunkIdx].start === idx;
 
-      return (
+      const rowIdx = idx;
+      out.push(
         <div
-          key={idx}
-          ref={el => { rowRefs.current[idx] = el; }}
+          key={rowIdx}
+          ref={el => { rowRefs.current[rowIdx] = el; }}
           style={{
             display: 'flex', minHeight: lineHeight, width: '100%',
             position: 'relative'
           }}
         >
-          {/* current-chunk indicator strip */}
           {isCurrentChunkStart && (
             <div style={{
               position: 'absolute', left: 0, right: 0, top: 0,
@@ -456,7 +545,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             {renderInline(r.leftText, segs?.aSegs ?? null, 'left', r.kind)}
           </div>
 
-          {/* CENTER GUTTER: leftNum | marker | rightNum */}
+          {/* CENTER GUTTER */}
           <div style={{
             width: centerGutterWidth, flexShrink: 0,
             display: 'flex', alignItems: 'stretch',
@@ -499,7 +588,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
         </div>
       );
-    });
+      idx++;
+    }
+    return out;
   };
 
   const fileChip = (side: Side) => {
@@ -728,6 +819,46 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           display: inline-flex; align-items: center; gap: 5px;
           transition: all 0.15s;
         }
+        .dv-toggle-btn {
+          height: 28px; padding: 0 10px; border-radius: 7px;
+          border: 1px solid ${colors.border};
+          background: transparent; color: ${colors.textSec};
+          font-size: 11px; font-weight: 700;
+          cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+          transition: all 0.15s; outline: none;
+        }
+        .dv-toggle-btn:hover {
+          color: ${colors.accent}; border-color: ${colors.accent};
+          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.10)' : 'rgba(59, 130, 246, 0.06)'};
+        }
+        .dv-toggle-btn.active {
+          color: ${colors.accent}; border-color: ${colors.accent};
+          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.14)' : 'rgba(59, 130, 246, 0.08)'};
+        }
+        .dv-fold-bar {
+          display: flex; align-items: center; gap: 8px;
+          padding: 6px 14px; cursor: pointer;
+          border-top: 1px dashed ${colors.border};
+          border-bottom: 1px dashed ${colors.border};
+          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.04)' : 'rgba(59, 130, 246, 0.03)'};
+          color: ${colors.textSec};
+          font-size: 11px; font-weight: 700;
+          transition: background 0.15s;
+          user-select: none;
+        }
+        .dv-fold-bar:hover {
+          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.12)' : 'rgba(59, 130, 246, 0.08)'};
+          color: ${colors.accent};
+        }
+        .dv-fold-text {
+          letter-spacing: 0.02em;
+        }
+        .dv-fold-hint {
+          margin-left: auto;
+          font-size: 10px; font-weight: 600;
+          color: ${colors.textDim};
+          letter-spacing: 0.04em; text-transform: uppercase;
+        }
       `}</style>
 
       {/* Header */}
@@ -767,6 +898,36 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* Collapse unchanged toggle */}
+          <button
+            className={`dv-toggle-btn ${collapseUnchanged ? 'active' : ''}`}
+            onClick={() => {
+              if (collapseUnchanged) {
+                setCollapseUnchanged(false);
+                setExpandedFolds(new Set());
+              } else {
+                setCollapseUnchanged(true);
+                setExpandedFolds(new Set()); // reset to fresh collapsed state
+              }
+            }}
+            title={collapseUnchanged ? 'Show all unchanged lines' : 'Collapse unchanged fragments'}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              {collapseUnchanged ? (
+                <>
+                  <polyline points="7 13 12 18 17 13"></polyline>
+                  <polyline points="7 6 12 11 17 6"></polyline>
+                </>
+              ) : (
+                <>
+                  <polyline points="17 11 12 6 7 11"></polyline>
+                  <polyline points="17 18 12 13 7 18"></polyline>
+                </>
+              )}
+            </svg>
+            {collapseUnchanged ? 'Collapsed' : 'Expanded'}
+          </button>
+
           {/* Diff navigation */}
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,

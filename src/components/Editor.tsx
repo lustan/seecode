@@ -14,6 +14,7 @@ interface Props {
   onLanguageChange?: (lang: SupportedLanguage | 'auto') => void;
   allNotes?: Note[];
   activeNoteId?: string | null;
+  openCompareTick?: number;
   showAlert?: (options: {
     type?: 'info' | 'warning' | 'error' | 'success';
     message: string;
@@ -23,7 +24,7 @@ interface Props {
   }) => void;
 }
 
-export default function Editor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, allNotes, activeNoteId, showAlert }: Props) {
+export default function Editor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, allNotes, activeNoteId, openCompareTick, showAlert }: Props) {
   return (
     <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
       <MultiLanguageEditor
@@ -37,6 +38,7 @@ export default function Editor({ value, onChange, isPopup = false, theme = 'dark
         autoDetectLanguage={!language}
         allNotes={allNotes}
         activeNoteId={activeNoteId}
+        openCompareTick={openCompareTick}
         showAlert={showAlert}
       />
     </div>
