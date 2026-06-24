@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Note, Folder } from '../App';
 import { LanguageIcon } from './LanguageIcons';
 import { BRAND_FONT_FAMILY, BRAND_NAME, getBrandStyle } from './brandStyles.mjs';
@@ -120,10 +121,47 @@ export default function NoteList({
   const [editingFolderName, setEditingFolderName] = useState('');
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [addMenuPos, setAddMenuPos] = useState<{ top: number; left: number } | null>(null);
+  // Floating action overlay positions — computed from the hovered row's bounding rect
+  // and rendered through a portal so they float over the editor, not inside the list.
+  const [noteActionsPos, setNoteActionsPos] = useState<{ top: number; left: number } | null>(null);
+  const [folderActionsPos, setFolderActionsPos] = useState<{ top: number; left: number } | null>(null);
   const editingInputRef = useRef<HTMLInputElement>(null);
   const editingFolderInputRef = useRef<HTMLInputElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
+  const noteRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const folderRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  // Delay clearing hover so the user can move from a row into its floating action overlay
+  // across the few-px gap without the overlay flickering away.
+  const noteHoverClearTimer = useRef<number | null>(null);
+  const folderHoverClearTimer = useRef<number | null>(null);
+
+  const scheduleClearNoteHover = (id: string) => {
+    if (noteHoverClearTimer.current) window.clearTimeout(noteHoverClearTimer.current);
+    noteHoverClearTimer.current = window.setTimeout(() => {
+      setHoveredId(prev => prev === id ? null : prev);
+    }, 120);
+  };
+  const cancelClearNoteHover = () => {
+    if (noteHoverClearTimer.current) {
+      window.clearTimeout(noteHoverClearTimer.current);
+      noteHoverClearTimer.current = null;
+    }
+  };
+  const scheduleClearFolderHover = (id: string) => {
+    if (folderHoverClearTimer.current) window.clearTimeout(folderHoverClearTimer.current);
+    folderHoverClearTimer.current = window.setTimeout(() => {
+      setHoveredFolderId(prev => prev === id ? null : prev);
+    }, 120);
+  };
+  const cancelClearFolderHover = () => {
+    if (folderHoverClearTimer.current) {
+      window.clearTimeout(folderHoverClearTimer.current);
+      folderHoverClearTimer.current = null;
+    }
+  };
 
   useEffect(() => {
     if (!editingId) return;
@@ -160,6 +198,52 @@ export default function NoteList({
       window.removeEventListener('scroll', handleReposition, true);
     };
   }, [showAddMenu]);
+
+  // Position the floating action group for the currently hovered file row. We re-read the
+  // row rect (instead of caching at hover-start) so the buttons stay aligned when the user
+  // scrolls the list or resizes the window.
+  const refreshNoteActionsPos = (noteId: string | null) => {
+    if (!noteId) { setNoteActionsPos(null); return; }
+    const el = noteRowRefs.current.get(noteId);
+    const sidebar = sidebarRef.current;
+    if (!el || !sidebar) return;
+    const rowRect = el.getBoundingClientRect();
+    const sidebarRect = sidebar.getBoundingClientRect();
+    setNoteActionsPos({
+      // Anchor right after the sidebar's right edge so the group floats over the editor.
+      left: sidebarRect.right + 4,
+      top: rowRect.top + rowRect.height / 2
+    });
+  };
+
+  const refreshFolderActionsPos = (folderId: string | null) => {
+    if (!folderId) { setFolderActionsPos(null); return; }
+    const el = folderRowRefs.current.get(folderId);
+    const sidebar = sidebarRef.current;
+    if (!el || !sidebar) return;
+    const rowRect = el.getBoundingClientRect();
+    const sidebarRect = sidebar.getBoundingClientRect();
+    setFolderActionsPos({
+      left: sidebarRect.right + 4,
+      top: rowRect.top + rowRect.height / 2
+    });
+  };
+
+  // Keep floating actions glued to their row across list scroll / window resize.
+  useEffect(() => {
+    if (!hoveredId && !hoveredFolderId) return;
+    const tick = () => {
+      if (hoveredId) refreshNoteActionsPos(hoveredId);
+      if (hoveredFolderId) refreshFolderActionsPos(hoveredFolderId);
+    };
+    const scroller = listScrollRef.current;
+    scroller?.addEventListener('scroll', tick);
+    window.addEventListener('resize', tick);
+    return () => {
+      scroller?.removeEventListener('scroll', tick);
+      window.removeEventListener('resize', tick);
+    };
+  }, [hoveredId, hoveredFolderId]);
 
   const MENU_WIDTH = 188;
   const MENU_GAP = 6;
@@ -320,14 +404,28 @@ export default function NoteList({
     return (
       <div
         key={note.id}
+        ref={(el) => {
+          if (el) noteRowRefs.current.set(note.id, el);
+          else noteRowRefs.current.delete(note.id);
+        }}
         draggable={editingId !== note.id}
         onDragStart={(e) => handleNoteDragStart(e, note.id)}
         onDragEnd={handleNoteDragEnd}
-        onMouseEnter={() => setHoveredId(note.id)}
-        onMouseLeave={() => setHoveredId(null)}
+        onMouseEnter={() => {
+          cancelClearNoteHover();
+          setHoveredId(note.id);
+          // defer one frame so the row has its final layout before we measure
+          requestAnimationFrame(() => refreshNoteActionsPos(note.id));
+        }}
+        onMouseLeave={() => {
+          scheduleClearNoteHover(note.id);
+        }}
         onClick={() => onSelect(note.id)}
         onDoubleClick={() => beginRename(note)}
         style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
           padding: '7px 10px',
           paddingLeft: indent ? '26px' : '10px',
           borderTopLeftRadius: isActive ? 0 : 8,
@@ -337,15 +435,13 @@ export default function NoteList({
           marginBottom: '3px',
           cursor: 'pointer',
           fontSize: '12px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
           background: isActive ? colors.itemActive : 'transparent',
           color: isActive ? '#60a5fa' : (hoveredId === note.id ? colors.text : colors.textSec),
           transition: 'background 0.15s ease, color 0.15s ease',
           opacity: isDragging ? 0.35 : 1,
           borderLeft: isActive ? '3px solid #3b82f6' : '3px solid transparent',
-          fontWeight: isActive ? 700 : 500
+          fontWeight: isActive ? 700 : 500,
+          overflow: 'hidden'
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, overflow: 'hidden' }}>
@@ -380,20 +476,6 @@ export default function NoteList({
             </span>
           )}
         </div>
-
-        {hoveredId === note.id && !isDragging && editingId !== note.id && (
-          <div
-            style={{ display: 'flex', gap: 4, marginLeft: 6 }}
-            onClick={e => e.stopPropagation()}
-            onDoubleClick={e => e.stopPropagation()}
-          >
-            <button
-              onClick={() => onDelete(note.id)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 5, display: 'flex', color: '#ef4444', opacity: 0.6 }}
-              className="sidebar-btn-subtle"
-            ><Icons.Trash /></button>
-          </div>
-        )}
       </div>
     );
   };
@@ -401,7 +483,7 @@ export default function NoteList({
   const rootNotes = notes.filter(n => !n.folderId || !folders.some(f => f.id === n.folderId));
 
   return (
-    <div style={{ ...style, background: colors.sidebarBg, display: 'flex', flexDirection: 'column', userSelect: 'none' }}>
+    <div ref={sidebarRef} style={{ ...style, background: colors.sidebarBg, display: 'flex', flexDirection: 'column', userSelect: 'none', position: 'relative' }}>
       <div style={{
         height: 40,
         padding: '0 10px 0 12px',
@@ -549,10 +631,11 @@ export default function NoteList({
       </div>
 
       <div
+        ref={listScrollRef}
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '10px 8px 20px',
+          padding: isPopup ? '6px 0 16px' : '10px 8px 20px',
           outline: isDragOverRoot && !dragOverFolderId
             ? `1px dashed ${colors.dropTargetBorder}`
             : 'none',
@@ -575,17 +658,26 @@ export default function NoteList({
           return (
             <div key={folder.id} style={{ marginBottom: 4 }}>
               <div
+                ref={(el) => {
+                  if (el) folderRowRefs.current.set(folder.id, el);
+                  else folderRowRefs.current.delete(folder.id);
+                }}
                 onDragOver={(e) => handleFolderDragOver(e, folder.id)}
                 onDragLeave={() => setDragOverFolderId(prev => prev === folder.id ? null : prev)}
                 onDrop={(e) => handleFolderDrop(e, folder.id)}
-                onMouseEnter={() => setHoveredFolderId(folder.id)}
-                onMouseLeave={() => setHoveredFolderId(null)}
+                onMouseEnter={() => {
+                  cancelClearFolderHover();
+                  setHoveredFolderId(folder.id);
+                  requestAnimationFrame(() => refreshFolderActionsPos(folder.id));
+                }}
+                onMouseLeave={() => {
+                  scheduleClearFolderHover(folder.id);
+                }}
                 onClick={() => onToggleFolder(folder.id)}
                 onDoubleClick={(e) => { e.stopPropagation(); beginRenameFolder(folder); }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'space-between',
                   padding: '6px 8px',
                   borderRadius: 7,
                   cursor: 'pointer',
@@ -598,7 +690,8 @@ export default function NoteList({
                   transition: 'background 0.15s ease, border-color 0.15s ease',
                   fontSize: 12,
                   fontWeight: 600,
-                  color: colors.text
+                  color: colors.text,
+                  overflow: 'hidden'
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, overflow: 'hidden' }}>
@@ -641,27 +734,6 @@ export default function NoteList({
                     </span>
                   )}
                 </div>
-
-                {isHovered && editingFolderId !== folder.id && (
-                  <div
-                    style={{ display: 'flex', gap: 2, marginLeft: 6 }}
-                    onClick={e => e.stopPropagation()}
-                    onDoubleClick={e => e.stopPropagation()}
-                  >
-                    <button
-                      onClick={() => onAdd({ folderId: folder.id })}
-                      title="New file in this folder"
-                      className="folder-action-btn"
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, borderRadius: 5, display: 'flex', color: colors.textSec }}
-                    ><Icons.Plus /></button>
-                    <button
-                      onClick={() => onDeleteFolder(folder.id)}
-                      title="Delete folder (files move to root)"
-                      className="sidebar-btn-subtle"
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, borderRadius: 5, display: 'flex', color: '#ef4444', opacity: 0.6 }}
-                    ><Icons.Trash /></button>
-                  </div>
-                )}
               </div>
 
               {isExpanded && (
@@ -733,7 +805,81 @@ export default function NoteList({
           to { opacity: 1; transform: translateY(0) scale(1); }
         }
         .menu-row:hover { background: ${colors.menuItemHover} !important; color: #3b82f6 !important; }
+
+        .row-actions {
+          position: fixed;
+          z-index: 1500;
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          padding: 3px 5px;
+          border-radius: 8px;
+          background: ${theme === 'dark' ? 'rgba(15, 17, 24, 0.92)' : 'rgba(255, 255, 255, 0.96)'};
+          border: 1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)'};
+          box-shadow: 0 6px 16px rgba(0,0,0,${theme === 'dark' ? '0.45' : '0.12'});
+          backdrop-filter: blur(8px);
+          transform: translateY(-50%);
+          animation: rowActionsIn 0.12s ease-out;
+          pointer-events: auto;
+        }
+        @keyframes rowActionsIn {
+          from { opacity: 0; transform: translateY(-50%) translateX(-4px); }
+          to   { opacity: 1; transform: translateY(-50%) translateX(0); }
+        }
+        .row-actions button {
+          background: none; border: none; cursor: pointer;
+          padding: 4px; border-radius: 5px; display: flex;
+          transition: background 0.12s ease, color 0.12s ease;
+        }
+        .row-actions button.danger { color: #ef4444; opacity: 0.85; }
+        .row-actions button.danger:hover { opacity: 1; background: rgba(239, 68, 68, 0.14); }
+        .row-actions button.neutral { color: ${colors.textSec}; }
+        .row-actions button.neutral:hover { color: #3b82f6; background: rgba(59, 130, 246, 0.12); }
       `}</style>
+
+      {/* Floating action overlay for the currently hovered file row — rendered via portal so
+          it can extend past the sidebar's right edge into the editor area without being clipped. */}
+      {hoveredId && noteActionsPos && !draggedNoteId && editingId !== hoveredId && createPortal(
+        <div
+          className="row-actions"
+          style={{ top: noteActionsPos.top, left: noteActionsPos.left }}
+          onMouseEnter={() => cancelClearNoteHover()}
+          onMouseLeave={() => scheduleClearNoteHover(hoveredId)}
+          onClick={e => e.stopPropagation()}
+          onDoubleClick={e => e.stopPropagation()}
+        >
+          <button
+            className="danger"
+            title="Delete file"
+            onClick={() => { onDelete(hoveredId); setHoveredId(null); }}
+          ><Icons.Trash /></button>
+        </div>,
+        document.body
+      )}
+
+      {/* Floating action overlay for the currently hovered folder row */}
+      {hoveredFolderId && folderActionsPos && editingFolderId !== hoveredFolderId && createPortal(
+        <div
+          className="row-actions"
+          style={{ top: folderActionsPos.top, left: folderActionsPos.left }}
+          onMouseEnter={() => cancelClearFolderHover()}
+          onMouseLeave={() => scheduleClearFolderHover(hoveredFolderId)}
+          onClick={e => e.stopPropagation()}
+          onDoubleClick={e => e.stopPropagation()}
+        >
+          <button
+            className="neutral"
+            title="New file in this folder"
+            onClick={() => { onAdd({ folderId: hoveredFolderId }); setHoveredFolderId(null); }}
+          ><Icons.Plus /></button>
+          <button
+            className="danger"
+            title="Delete folder (files move to root)"
+            onClick={() => { onDeleteFolder(hoveredFolderId); setHoveredFolderId(null); }}
+          ><Icons.Trash /></button>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
