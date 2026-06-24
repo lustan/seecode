@@ -105,7 +105,6 @@ export default function App({ isPopup = false }) {
   const [alertState, setAlertState] = useState<any>(null);
   const [toastState, setToastState] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [openCompareTick, setOpenCompareTick] = useState(0);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
 
@@ -173,8 +172,12 @@ export default function App({ isPopup = false }) {
           url.searchParams.delete('compare');
           window.history.replaceState({}, '', url.toString());
         } catch {}
-        // bump tick to trigger the editor to open compare on next render
-        setOpenCompareTick(t => t + 1);
+        // Fire a one-shot event after the editor mounts. Using an event (not state)
+        // prevents accidental re-trigger when the editor remounts later — e.g. after
+        // creating a new note, which switches activeId and remounts <Editor>.
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('seecode:open-compare'));
+        }, 0);
       }
     });
 
@@ -470,7 +473,6 @@ export default function App({ isPopup = false }) {
               onLanguageChange={(lang) => setNoteLanguage(activeId!, lang)}
               allNotes={notes}
               activeNoteId={activeId}
-              openCompareTick={openCompareTick}
               showAlert={showAlert}
             />
           ) : (

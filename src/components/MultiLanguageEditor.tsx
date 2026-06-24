@@ -95,11 +95,10 @@ interface Props {
   autoDetectLanguage?: boolean;
   allNotes?: Note[];
   activeNoteId?: string | null;
-  openCompareTick?: number;
   showAlert?: (o: any) => void;
 }
 
-export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, openCompareTick, showAlert }: Props) {
+export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, showAlert }: Props) {
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
   const [showDiff, setShowDiff] = useState(false);
@@ -118,12 +117,15 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   const editorRef = useRef<any>(null);
   const getEditorView = useCallback((): EditorView | null => editorRef.current?.view || null, []);
 
-  // External trigger: parent flips openCompareTick → open the diff viewer.
+  // External trigger: app fires a `seecode:open-compare` event on load when ?compare=1
+  // is present. Use an event (not a prop tick) so the editor remounting later — e.g. on
+  // new note creation, which changes the React key — can't accidentally retrigger it.
   useEffect(() => {
-    if (openCompareTick && openCompareTick > 0 && !isPopup) {
-      setShowDiff(true);
-    }
-  }, [openCompareTick, isPopup]);
+    if (isPopup) return;
+    const handler = () => setShowDiff(true);
+    window.addEventListener('seecode:open-compare', handler);
+    return () => window.removeEventListener('seecode:open-compare', handler);
+  }, [isPopup]);
 
   useEffect(() => {
     if (language) {
