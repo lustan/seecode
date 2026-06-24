@@ -14,6 +14,8 @@ import { syntaxTree } from '@codemirror/language';
 import { linter, Diagnostic, lintGutter } from '@codemirror/lint';
 import { Extension, StateEffect, StateField, RangeSetBuilder, Prec } from '@codemirror/state';
 import { SupportedLanguage, detectLanguage, getSupportedLanguages, getLanguageDisplayName } from '../utils/languageDetector';
+import DiffViewer from './DiffViewer';
+import type { Note } from '../App';
 
 const Icons = {
   Clear: () => (
@@ -27,6 +29,9 @@ const Icons = {
   ),
   Wrap: () => (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 10 4 15 9 20"></polyline><path d="M20 4v7a4 4 0 0 1-4 4H4"></path></svg>
+  ),
+  Compare: () => (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
   ),
   ChevronDown: () => (
     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
@@ -86,12 +91,15 @@ interface Props {
   language?: SupportedLanguage;
   onLanguageChange?: (lang: SupportedLanguage | 'auto') => void;
   autoDetectLanguage?: boolean;
+  allNotes?: Note[];
+  activeNoteId?: string | null;
   showAlert?: (o: any) => void;
 }
 
-export default function MultiLanguageEditor({ value, onChange, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, showAlert }: Props) {
+export default function MultiLanguageEditor({ value, onChange, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, showAlert }: Props) {
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
+  const [showDiff, setShowDiff] = useState(false);
   const [errorCount, setErrorCount] = useState(0);
   const [showSearch, setShowSearch] = useState(false);
   const [showReplace, setShowReplace] = useState(false);
@@ -645,6 +653,9 @@ export default function MultiLanguageEditor({ value, onChange, theme = 'dark', f
           <button className="ed-btn" style={btnStyle} onClick={handleFormat} title="Format JSON"><Icons.Format /></button>
           <button className="ed-btn" style={btnStyle} onClick={handleCopy} title="Copy All"><Icons.Copy /></button>
           <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title="Toggle Wrap"><Icons.Wrap /></button>
+          {allNotes && allNotes.length > 0 && (
+            <button className="ed-btn" style={btnStyle} onClick={() => setShowDiff(true)} title="Compare with another file"><Icons.Compare /></button>
+          )}
           <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title="Clear All"><Icons.Clear /></button>
         </div>
       )}
@@ -789,6 +800,16 @@ export default function MultiLanguageEditor({ value, onChange, theme = 'dark', f
           </div>
         </div>
       </div>
+
+      {showDiff && (
+        <DiffViewer
+          notes={allNotes || []}
+          currentNote={allNotes?.find(n => n.id === activeNoteId) || null}
+          theme={theme}
+          fontSize={fontSize}
+          onClose={() => setShowDiff(false)}
+        />
+      )}
     </div>
   );
 }

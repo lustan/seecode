@@ -443,15 +443,17 @@ export default function App({ isPopup = false }) {
 
         <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
           {activeNote ? (
-            <Editor 
+            <Editor
               key={activeId}
-              value={activeNote.content} 
+              value={activeNote.content}
               onChange={(c) => setNotes(notes.map(n => n.id === activeId ? { ...n, content: c } : n))}
               isPopup={isPopup}
               theme={theme}
               fontSize={fontSize}
               language={activeNote.language}
               onLanguageChange={(lang) => setNoteLanguage(activeId!, lang)}
+              allNotes={notes}
+              activeNoteId={activeId}
               showAlert={showAlert}
             />
           ) : (
