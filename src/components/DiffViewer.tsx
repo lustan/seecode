@@ -154,7 +154,197 @@ function buildChunks(rows: Row[]): { start: number; end: number }[] {
   return chunks;
 }
 
+// =============================================================================
+// LivePane — editable side with a colored highlight overlay aligned to text rows
+// =============================================================================
+type LiveColors = {
+  panelBg: string;
+  border: string;
+  text: string;
+  textDim: string;
+  gutterBg: string;
+  removeBg: string;
+  addBg: string;
+  modifyBg: string;
+  accent: string;
+};
+
+function LivePane(props: {
+  side: 'left' | 'right';
+  text: string;
+  onChange: (v: string) => void;
+  lineKinds: ('equal' | 'remove' | 'add' | 'modify')[];
+  paneRef: React.RefObject<HTMLDivElement>;
+  onScrollSync: (from: 'left' | 'right' | 'gutter', scrollTop: number) => void;
+  lineHeight: number;
+  fontSize: number;
+  colors: LiveColors;
+  dimUnchanged: boolean;
+  rowBgFor: (kind: 'equal' | 'remove' | 'add' | 'modify', side: 'left' | 'right') => string;
+  toolbar: React.ReactNode;
+  autoFocus?: boolean;
+}) {
+  const {
+    side, text, onChange, lineKinds, paneRef, onScrollSync,
+    lineHeight, fontSize, colors, dimUnchanged, rowBgFor, toolbar, autoFocus
+  } = props;
+
+  const taRef = React.useRef<HTMLTextAreaElement>(null);
+  const overlayRef = React.useRef<HTMLDivElement>(null);
+  const numbersRef = React.useRef<HTMLDivElement>(null);
+
+  // Total lines drives the document height (so empty trailing lines also get a band).
+  const totalLines = text === '' ? 1 : text.split('\n').length;
+  const docHeight = totalLines * lineHeight;
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    onScrollSync(side, e.currentTarget.scrollTop);
+  };
+
+  // Side strip line-number column rendered inside the pane (the central gutter
+  // shows the paired numbers; this strip shows just this side's numbers as a
+  // permanent anchor while typing).
+  const numWidth = 38;
+
+  // Render highlight bands — one absolutely-positioned div per line that isn't equal.
+  // Equal lines need no band; the panel background shows through.
+  const bands: React.ReactNode[] = [];
+  for (let i = 0; i < lineKinds.length; i++) {
+    const kind = lineKinds[i];
+    if (kind === 'equal') continue;
+    const bg = rowBgFor(kind, side);
+    if (bg === 'transparent') continue;
+    bands.push(
+      <div
+        key={i}
+        style={{
+          position: 'absolute',
+          left: 0, right: 0,
+          top: i * lineHeight,
+          height: lineHeight,
+          background: bg,
+          pointerEvents: 'none'
+        }}
+      />
+    );
+  }
+
+  // Numbers column content (sticky on the left, scrolls with the pane content).
+  const numbers: React.ReactNode[] = [];
+  for (let i = 0; i < totalLines; i++) {
+    const kind = lineKinds[i] || 'equal';
+    const color = kind === 'remove' ? '#ef4444'
+      : kind === 'add' ? '#22c55e'
+      : kind === 'modify' ? '#eab308'
+      : colors.textDim;
+    numbers.push(
+      <div
+        key={i}
+        style={{
+          height: lineHeight,
+          lineHeight: `${lineHeight}px`,
+          fontSize: Math.max(10, fontSize - 2),
+          color,
+          fontWeight: kind === 'equal' ? 500 : 700,
+          textAlign: 'right',
+          paddingRight: 8,
+          opacity: kind === 'equal' && dimUnchanged ? 0.5 : 1,
+          fontVariantNumeric: 'tabular-nums'
+        }}
+      >
+        {i + 1}
+      </div>
+    );
+  }
+
+  // Dim unchanged: overlay a translucent veil on the textarea text by lowering its color alpha
+  // when the line is equal. We can't per-line style textarea content, so we keep the text fully
+  // visible and dim via the highlight overlay only (cheap visual cue).
+
+  return (
+    <div style={{
+      flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+      background: colors.panelBg,
+      borderRight: side === 'left' ? `1px solid ${colors.border}` : 'none'
+    }}>
+      {toolbar}
+      <div
+        ref={paneRef}
+        onScroll={handleScroll}
+        className="dv-scroll"
+        style={{
+          position: 'relative', flex: 1, overflow: 'auto',
+          background: colors.panelBg
+        }}
+      >
+        {/* Inner sizer to drive overflow with the document height + min content */}
+        <div style={{
+          position: 'relative',
+          minHeight: '100%',
+          height: Math.max(docHeight + 40, 0),
+          display: 'flex'
+        }}>
+          {/* Line-number column (left-side anchor) */}
+          <div
+            ref={numbersRef}
+            style={{
+              width: numWidth, flexShrink: 0,
+              background: colors.gutterBg,
+              borderRight: `1px solid ${colors.border}`,
+              position: 'sticky', left: 0, top: 0,
+              zIndex: 2
+            }}
+          >
+            {numbers}
+          </div>
+
+          {/* Text region: bands overlay + textarea */}
+          <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+            <div
+              ref={overlayRef}
+              style={{
+                position: 'absolute', inset: 0,
+                pointerEvents: 'none'
+              }}
+            >
+              {bands}
+            </div>
+            <textarea
+              ref={taRef}
+              value={text}
+              onChange={e => onChange(e.target.value)}
+              placeholder={`${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…`}
+              spellCheck={false}
+              autoFocus={autoFocus}
+              wrap="off"
+              style={{
+                position: 'relative', zIndex: 1,
+                width: '100%', minHeight: '100%',
+                height: Math.max(docHeight + 40, 0),
+                resize: 'none', outline: 'none', border: 'none',
+                padding: `0 12px`,
+                background: 'transparent',
+                color: colors.text,
+                caretColor: colors.accent,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                fontSize: `${fontSize}px`,
+                lineHeight: `${lineHeight}px`,
+                tabSize: 2,
+                whiteSpace: 'pre',
+                overflow: 'hidden'
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onClose }: Props) {
+  // Layout constants used by scroll math and the live-pane subcomponent.
+  const lineHeight = Math.round(fontSize * 1.55);
+
   const [leftSrc, setLeftSrc] = useState<PaneSource>(
     currentNote ? { kind: 'note', noteId: currentNote.id } : { kind: 'blank' }
   );
@@ -163,21 +353,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [leftText, setLeftText] = useState<string>(currentNote?.content || '');
   const [rightText, setRightText] = useState<string>('');
 
-  const [mode, setMode] = useState<'diff' | 'edit'>('diff');
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
-  // Collapse unchanged fragments — IDEA-style
-  const [collapseUnchanged, setCollapseUnchanged] = useState(true);
-  const [expandedFolds, setExpandedFolds] = useState<Set<string>>(new Set());
-  const CONTEXT_LINES = 3;
-  const MIN_FOLD = CONTEXT_LINES * 2 + 2; // only collapse runs longer than this
+  // Dim unchanged lines instead of collapsing — collapsing isn't viable when both
+  // sides must stay fully editable.
+  const [dimUnchanged, setDimUnchanged] = useState(true);
 
   const [currentChunkIdx, setCurrentChunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
   const diffScrollRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const leftPaneRef = useRef<HTMLDivElement>(null);
+  const rightPaneRef = useRef<HTMLDivElement>(null);
+  const syncingScrollRef = useRef<Side | null>(null);
 
   const leftTitle = leftSrc.kind === 'note'
     ? (notes.find(n => n.id === leftSrc.noteId)?.title || 'Untitled')
@@ -196,48 +386,31 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const chunks = useMemo(() => buildChunks(rows), [rows]);
 
-  // Compute foldable regions: maximal runs of equal rows with CONTEXT_LINES of context
-  // preserved at each end (or at the file start/end). Only collapse if the resulting
-  // hidden run is at least 1 line.
-  type Fold = { start: number; end: number; hiddenStart: number; hiddenEnd: number; key: string };
-  const folds = useMemo<Fold[]>(() => {
-    if (!collapseUnchanged) return [];
-    const out: Fold[] = [];
-    let i = 0;
-    while (i < rows.length) {
-      if (rows[i].kind === 'equal') {
-        const start = i;
-        while (i < rows.length && rows[i].kind === 'equal') i++;
-        const end = i - 1;
-        const isFileStart = start === 0;
-        const isFileEnd = end === rows.length - 1;
-        const ctxBefore = isFileStart ? 0 : CONTEXT_LINES;
-        const ctxAfter = isFileEnd ? 0 : CONTEXT_LINES;
-        const hiddenStart = start + ctxBefore;
-        const hiddenEnd = end - ctxAfter;
-        if (hiddenEnd >= hiddenStart && (hiddenEnd - hiddenStart + 1) >= 1 &&
-            (end - start + 1) >= (ctxBefore + ctxAfter + 1)) {
-          out.push({
-            start, end, hiddenStart, hiddenEnd,
-            key: `${hiddenStart}-${hiddenEnd}`
-          });
-        }
-      } else {
-        i++;
-      }
+  // Per-line kind for each side, indexed by 0-based line number in that side's text.
+  type LineKind = 'equal' | 'remove' | 'add' | 'modify';
+  const leftLineKinds = useMemo<LineKind[]>(() => {
+    const total = leftText === '' ? 0 : leftText.split('\n').length;
+    const out: LineKind[] = new Array(total).fill('equal');
+    for (const r of rows) {
+      if (r.leftNum == null) continue;
+      const i = r.leftNum - 1;
+      if (i < 0 || i >= total) continue;
+      if (r.kind !== 'equal' && r.kind !== 'add') out[i] = r.kind;
     }
     return out;
-  }, [rows, collapseUnchanged]);
+  }, [leftText, rows]);
 
-  // Map: rowIdx → fold it belongs to (only for actually-hidden indices); also map fold start position
-  const foldAtRow = useMemo<Map<number, Fold>>(() => {
-    const m = new Map<number, Fold>();
-    folds.forEach(f => {
-      if (expandedFolds.has(f.key)) return;
-      for (let i = f.hiddenStart; i <= f.hiddenEnd; i++) m.set(i, f);
-    });
-    return m;
-  }, [folds, expandedFolds]);
+  const rightLineKinds = useMemo<LineKind[]>(() => {
+    const total = rightText === '' ? 0 : rightText.split('\n').length;
+    const out: LineKind[] = new Array(total).fill('equal');
+    for (const r of rows) {
+      if (r.rightNum == null) continue;
+      const i = r.rightNum - 1;
+      if (i < 0 || i >= total) continue;
+      if (r.kind !== 'equal' && r.kind !== 'remove') out[i] = r.kind;
+    }
+    return out;
+  }, [rightText, rows]);
 
   // reset chunk index whenever chunks change
   useEffect(() => {
@@ -253,18 +426,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const scrollToChunk = useCallback((idx: number) => {
     if (idx < 0 || idx >= chunks.length) return;
-    const targetRow = chunks[idx].start;
-    // chunk rows are non-equal, so they are never inside a fold — no expansion needed.
-    // requestAnimationFrame waits one paint so refs are up to date after any state changes.
+    const first = rows[chunks[idx].start];
+    const leftLine = first.leftNum != null ? first.leftNum - 1 : null;
+    const rightLine = first.rightNum != null ? first.rightNum - 1 : null;
     requestAnimationFrame(() => {
-      const el = rowRefs.current[targetRow];
-      if (!el || !diffScrollRef.current) return;
-      const scroller = diffScrollRef.current;
-      const elTop = el.offsetTop;
-      const desired = elTop - scroller.clientHeight / 3;
-      scroller.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+      [
+        { ref: leftPaneRef, line: leftLine },
+        { ref: rightPaneRef, line: rightLine },
+      ].forEach(({ ref, line }) => {
+        if (line == null || !ref.current) return;
+        const top = line * lineHeight;
+        const desired = Math.max(0, top - ref.current.clientHeight / 3);
+        ref.current.scrollTo({ top: desired, behavior: 'smooth' });
+      });
     });
-  }, [chunks]);
+  }, [chunks, rows, lineHeight]);
 
   const goPrevDiff = useCallback(() => {
     if (chunks.length === 0) return;
@@ -383,7 +559,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return '';
   };
 
-  const lineHeight = Math.round(fontSize * 1.55);
   const numCol = 46;
   const markerCol = 18;
   const centerGutterWidth = numCol * 2 + markerCol;
@@ -470,42 +645,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
       );
     }
-    const out: React.ReactNode[] = [];
-    let idx = 0;
-    while (idx < rows.length) {
-      const fold = foldAtRow.get(idx);
-      if (fold && idx === fold.hiddenStart) {
-        // Render the fold bar (single row in the layout)
-        const hiddenCount = fold.hiddenEnd - fold.hiddenStart + 1;
-        out.push(
-          <div
-            key={`fold-${fold.key}`}
-            ref={el => { rowRefs.current[idx] = el; }}
-            className="dv-fold-bar"
-            onClick={() => {
-              setExpandedFolds(prev => {
-                const n = new Set(prev);
-                n.add(fold.key);
-                return n;
-              });
-            }}
-            title={`Expand ${hiddenCount} unchanged line${hiddenCount === 1 ? '' : 's'}`}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="7 13 12 18 17 13"></polyline>
-              <polyline points="7 6 12 11 17 6"></polyline>
-            </svg>
-            <span className="dv-fold-text">
-              {hiddenCount} unchanged line{hiddenCount === 1 ? '' : 's'}
-            </span>
-            <span className="dv-fold-hint">click to expand</span>
-          </div>
-        );
-        idx = fold.hiddenEnd + 1;
-        continue;
-      }
-
-      const r = rows[idx];
+    return rows.map((r, idx) => {
       const segs = r.kind === 'modify' && r.leftText != null && r.rightText != null
         ? inlineDiff(r.leftText, r.rightText)
         : null;
@@ -515,21 +655,25 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         currentChunkIdx < chunks.length &&
         chunks[currentChunkIdx].start === idx;
 
-      const rowIdx = idx;
-      out.push(
+      const isEqual = r.kind === 'equal';
+      const dim = isEqual && dimUnchanged ? 0.45 : 1;
+
+      return (
         <div
-          key={rowIdx}
-          ref={el => { rowRefs.current[rowIdx] = el; }}
+          key={idx}
+          ref={el => { rowRefs.current[idx] = el; }}
           style={{
             display: 'flex', minHeight: lineHeight, width: '100%',
-            position: 'relative'
+            position: 'relative',
+            opacity: dim
           }}
         >
           {isCurrentChunkStart && (
             <div style={{
               position: 'absolute', left: 0, right: 0, top: 0,
               height: 2, background: colors.accent, zIndex: 2,
-              boxShadow: `0 0 8px ${colors.accent}`
+              boxShadow: `0 0 8px ${colors.accent}`,
+              opacity: 1
             }} />
           )}
 
@@ -540,7 +684,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             whiteSpace: 'pre', lineHeight: `${lineHeight}px`,
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
             fontSize, color: colors.text,
-            textAlign: 'left'
+            textAlign: 'left',
+            overflow: 'hidden'
           }}>
             {renderInline(r.leftText, segs?.aSegs ?? null, 'left', r.kind)}
           </div>
@@ -582,15 +727,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             whiteSpace: 'pre', lineHeight: `${lineHeight}px`,
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
             fontSize, color: colors.text,
-            textAlign: 'left'
+            textAlign: 'left',
+            overflow: 'hidden'
           }}>
             {renderInline(r.rightText, segs?.bSegs ?? null, 'right', r.kind)}
           </div>
         </div>
       );
-      idx++;
-    }
-    return out;
+    });
   };
 
   const fileChip = (side: Side) => {
@@ -686,6 +830,17 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       </div>
     );
   };
+
+  // Sync vertical scroll across the two panes. Marker prevents feedback loops.
+  const syncScroll = useCallback((from: Side | 'gutter', scrollTop: number) => {
+    if (syncingScrollRef.current && syncingScrollRef.current !== (from as any)) return;
+    syncingScrollRef.current = from as Side;
+    const other = from === 'left' ? rightPaneRef.current : leftPaneRef.current;
+    if (other && Math.abs(other.scrollTop - scrollTop) > 1) {
+      other.scrollTop = scrollTop;
+    }
+    requestAnimationFrame(() => { syncingScrollRef.current = null; });
+  }, []);
 
   return (
     <div style={{
@@ -898,34 +1053,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* Collapse unchanged toggle */}
+          {/* Dim unchanged toggle */}
           <button
-            className={`dv-toggle-btn ${collapseUnchanged ? 'active' : ''}`}
-            onClick={() => {
-              if (collapseUnchanged) {
-                setCollapseUnchanged(false);
-                setExpandedFolds(new Set());
-              } else {
-                setCollapseUnchanged(true);
-                setExpandedFolds(new Set()); // reset to fresh collapsed state
-              }
-            }}
-            title={collapseUnchanged ? 'Show all unchanged lines' : 'Collapse unchanged fragments'}
+            className={`dv-toggle-btn ${dimUnchanged ? 'active' : ''}`}
+            onClick={() => setDimUnchanged(d => !d)}
+            title={dimUnchanged ? 'Show all lines at full brightness' : 'Dim unchanged lines to focus on diffs'}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              {collapseUnchanged ? (
-                <>
-                  <polyline points="7 13 12 18 17 13"></polyline>
-                  <polyline points="7 6 12 11 17 6"></polyline>
-                </>
-              ) : (
-                <>
-                  <polyline points="17 11 12 6 7 11"></polyline>
-                  <polyline points="17 18 12 13 7 18"></polyline>
-                </>
-              )}
+              <circle cx="12" cy="12" r="4"></circle>
+              <line x1="12" y1="2" x2="12" y2="5"></line>
+              <line x1="12" y1="19" x2="12" y2="22"></line>
+              <line x1="2" y1="12" x2="5" y2="12"></line>
+              <line x1="19" y1="12" x2="22" y2="12"></line>
             </svg>
-            {collapseUnchanged ? 'Collapsed' : 'Expanded'}
+            {dimUnchanged ? 'Focus diffs' : 'Show all'}
           </button>
 
           {/* Diff navigation */}
@@ -973,42 +1114,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
 
-          <div style={{
-            display: 'inline-flex', padding: 3, borderRadius: 8,
-            background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)'
-          }}>
-            <button
-              className="dv-tab"
-              onClick={() => setMode('diff')}
-              style={{
-                background: mode === 'diff' ? (theme === 'dark' ? 'rgba(96,165,250,0.18)' : 'rgba(59,130,246,0.12)') : 'transparent',
-                color: mode === 'diff' ? colors.accent : colors.textSec
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="6" y1="3" x2="6" y2="15"></line>
-                <circle cx="18" cy="6" r="3"></circle>
-                <circle cx="6" cy="18" r="3"></circle>
-                <path d="M18 9a9 9 0 0 1-9 9"></path>
-              </svg>
-              Diff
-            </button>
-            <button
-              className="dv-tab"
-              onClick={() => setMode('edit')}
-              style={{
-                background: mode === 'edit' ? (theme === 'dark' ? 'rgba(96,165,250,0.18)' : 'rgba(59,130,246,0.12)') : 'transparent',
-                color: mode === 'edit' ? colors.accent : colors.textSec
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4L18.5 2.5z"></path>
-              </svg>
-              Edit
-            </button>
-          </div>
-
           <button className="dv-icon-btn" onClick={onClose} title="Close (Esc)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1020,40 +1125,44 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
       {/* Body */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
-        {mode === 'diff' ? (
-          <div
-            ref={diffScrollRef}
-            className="dv-scroll"
-            style={{ flex: 1, overflow: 'auto', background: colors.panelBg, position: 'relative' }}
-          >
-            {renderRows()}
-            <div style={{ height: 80 }} />
-          </div>
-        ) : (
-          <>
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: colors.panelBg, borderRight: `1px solid ${colors.border}` }}>
-              {editToolbar('left')}
-              <textarea
-                className="dv-edit-area"
-                value={leftText}
-                onChange={e => setLeftText(e.target.value)}
-                placeholder="Left side — type or pick a file…"
-                spellCheck={false}
-              />
-            </div>
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: colors.panelBg }}>
-              {editToolbar('right')}
-              <textarea
-                className="dv-edit-area"
-                value={rightText}
-                onChange={e => setRightText(e.target.value)}
-                placeholder="Right side — type or pick a file…"
-                spellCheck={false}
-                autoFocus
-              />
-            </div>
-          </>
-        )}
+        {/* LEFT editable pane */}
+        <LivePane
+          side="left"
+          text={leftText}
+          onChange={setLeftText}
+          lineKinds={leftLineKinds}
+          paneRef={leftPaneRef}
+          onScrollSync={syncScroll}
+          lineHeight={lineHeight}
+          fontSize={fontSize}
+          colors={colors}
+          dimUnchanged={dimUnchanged}
+          rowBgFor={rowBgFor}
+          toolbar={editToolbar('left')}
+        />
+
+        {/* Middle separator strip — purely visual */}
+        <div style={{
+          width: 1, flexShrink: 0,
+          background: colors.borderStrong
+        }} />
+
+        {/* RIGHT editable pane */}
+        <LivePane
+          side="right"
+          text={rightText}
+          onChange={setRightText}
+          lineKinds={rightLineKinds}
+          paneRef={rightPaneRef}
+          onScrollSync={syncScroll}
+          lineHeight={lineHeight}
+          fontSize={fontSize}
+          colors={colors}
+          dimUnchanged={dimUnchanged}
+          rowBgFor={rowBgFor}
+          toolbar={editToolbar('right')}
+          autoFocus
+        />
 
         {/* Picker overlay */}
         {pickerSide && (
