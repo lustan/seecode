@@ -98,46 +98,6 @@ function buildRows(ops: DiffOp[]): Row[] {
   return rows;
 }
 
-function inlineDiff(a: string, b: string): { aSegs: { text: string; changed: boolean }[]; bSegs: { text: string; changed: boolean }[] } {
-  const aArr = Array.from(a);
-  const bArr = Array.from(b);
-  const m = aArr.length, n = bArr.length;
-  if (m > 400 || n > 400) {
-    return {
-      aSegs: [{ text: a, changed: true }],
-      bSegs: [{ text: b, changed: true }]
-    };
-  }
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      if (aArr[i] === bArr[j]) dp[i][j] = dp[i + 1][j + 1] + 1;
-      else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const aSegs: { text: string; changed: boolean }[] = [];
-  const bSegs: { text: string; changed: boolean }[] = [];
-  let i = 0, j = 0;
-  const pushA = (ch: string, changed: boolean) => {
-    const last = aSegs[aSegs.length - 1];
-    if (last && last.changed === changed) last.text += ch;
-    else aSegs.push({ text: ch, changed });
-  };
-  const pushB = (ch: string, changed: boolean) => {
-    const last = bSegs[bSegs.length - 1];
-    if (last && last.changed === changed) last.text += ch;
-    else bSegs.push({ text: ch, changed });
-  };
-  while (i < m && j < n) {
-    if (aArr[i] === bArr[j]) { pushA(aArr[i], false); pushB(bArr[j], false); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { pushA(aArr[i], true); i++; }
-    else { pushB(bArr[j], true); j++; }
-  }
-  while (i < m) { pushA(aArr[i], true); i++; }
-  while (j < n) { pushB(bArr[j], true); j++; }
-  return { aSegs, bSegs };
-}
-
 // Build diff chunks: maximal runs of non-equal rows
 function buildChunks(rows: Row[]): { start: number; end: number }[] {
   const chunks: { start: number; end: number }[] = [];
@@ -179,19 +139,17 @@ function LivePane(props: {
   lineHeight: number;
   fontSize: number;
   colors: LiveColors;
-  dimUnchanged: boolean;
   rowBgFor: (kind: 'equal' | 'remove' | 'add' | 'modify', side: 'left' | 'right') => string;
   toolbar: React.ReactNode;
   autoFocus?: boolean;
 }) {
   const {
     side, text, onChange, lineKinds, paneRef, onScrollSync,
-    lineHeight, fontSize, colors, dimUnchanged, rowBgFor, toolbar, autoFocus
+    lineHeight, fontSize, colors, rowBgFor, toolbar, autoFocus
   } = props;
 
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const overlayRef = React.useRef<HTMLDivElement>(null);
-  const numbersRef = React.useRef<HTMLDivElement>(null);
 
   // Total lines drives the document height (so empty trailing lines also get a band).
   const totalLines = text === '' ? 1 : text.split('\n').length;
@@ -201,10 +159,7 @@ function LivePane(props: {
     onScrollSync(side, e.currentTarget.scrollTop);
   };
 
-  // Side strip line-number column rendered inside the pane (the central gutter
-  // shows the paired numbers; this strip shows just this side's numbers as a
-  // permanent anchor while typing).
-  const numWidth = 38;
+  // Live panes use the shared center gutter for line numbers.
 
   // Render highlight bands — one absolutely-positioned div per line that isn't equal.
   // Equal lines need no band; the panel background shows through.
@@ -226,34 +181,6 @@ function LivePane(props: {
           pointerEvents: 'none'
         }}
       />
-    );
-  }
-
-  // Numbers column content (sticky on the left, scrolls with the pane content).
-  const numbers: React.ReactNode[] = [];
-  for (let i = 0; i < totalLines; i++) {
-    const kind = lineKinds[i] || 'equal';
-    const color = kind === 'remove' ? '#ef4444'
-      : kind === 'add' ? '#22c55e'
-      : kind === 'modify' ? '#eab308'
-      : colors.textDim;
-    numbers.push(
-      <div
-        key={i}
-        style={{
-          height: lineHeight,
-          lineHeight: `${lineHeight}px`,
-          fontSize: Math.max(10, fontSize - 2),
-          color,
-          fontWeight: kind === 'equal' ? 500 : 700,
-          textAlign: 'right',
-          paddingRight: 8,
-          opacity: kind === 'equal' && dimUnchanged ? 0.5 : 1,
-          fontVariantNumeric: 'tabular-nums'
-        }}
-      >
-        {i + 1}
-      </div>
     );
   }
 
@@ -284,20 +211,6 @@ function LivePane(props: {
           height: Math.max(docHeight + 40, 0),
           display: 'flex'
         }}>
-          {/* Line-number column (left-side anchor) */}
-          <div
-            ref={numbersRef}
-            style={{
-              width: numWidth, flexShrink: 0,
-              background: colors.gutterBg,
-              borderRight: `1px solid ${colors.border}`,
-              position: 'sticky', left: 0, top: 0,
-              zIndex: 2
-            }}
-          >
-            {numbers}
-          </div>
-
           {/* Text region: bands overlay + textarea */}
           <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
             <div
@@ -363,11 +276,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [currentChunkIdx, setCurrentChunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
-  const diffScrollRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
-  const syncingScrollRef = useRef<Side | null>(null);
+  const gutterRef = useRef<HTMLDivElement>(null);
+  const syncingScrollRef = useRef<Side | 'gutter' | null>(null);
 
   const leftTitle = leftSrc.kind === 'note'
     ? (notes.find(n => n.id === leftSrc.noteId)?.title || 'Untitled')
@@ -412,7 +325,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return out;
   }, [rightText, rows]);
 
-  // reset chunk index whenever chunks change
   useEffect(() => {
     setCurrentChunkIdx(chunks.length > 0 ? 0 : -1);
   }, [chunks.length]);
@@ -429,12 +341,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const first = rows[chunks[idx].start];
     const leftLine = first.leftNum != null ? first.leftNum - 1 : null;
     const rightLine = first.rightNum != null ? first.rightNum - 1 : null;
+    const fallbackLine = Math.max(0, chunks[idx].start);
     requestAnimationFrame(() => {
       [
-        { ref: leftPaneRef, line: leftLine },
-        { ref: rightPaneRef, line: rightLine },
+        { ref: leftPaneRef, line: leftLine ?? fallbackLine },
+        { ref: rightPaneRef, line: rightLine ?? fallbackLine },
+        { ref: gutterRef, line: fallbackLine },
       ].forEach(({ ref, line }) => {
-        if (line == null || !ref.current) return;
+        if (!ref.current) return;
         const top = line * lineHeight;
         const desired = Math.max(0, top - ref.current.clientHeight / 3);
         ref.current.scrollTo({ top: desired, behavior: 'smooth' });
@@ -454,7 +368,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const next = currentChunkIdx >= chunks.length - 1 ? 0 : currentChunkIdx + 1;
     setCurrentChunkIdx(next);
     scrollToChunk(next);
-  }, [chunks.length, currentChunkIdx]);
+  }, [chunks.length, currentChunkIdx, scrollToChunk]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -564,22 +478,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const centerGutterWidth = numCol * 2 + markerCol;
   const gutterFontSize = Math.max(10, fontSize - 2);
 
-  const renderInline = (text: string | undefined, segs: { text: string; changed: boolean }[] | null, side: Side, kind: Row['kind']) => {
-    if (!text && !segs) return <span style={{ opacity: 0.3 }}>&nbsp;</span>;
-    if (kind === 'modify' && segs) {
-      const bg = side === 'left' ? colors.removeInline : colors.addInline;
-      return (
-        <>
-          {segs.map((s, i) => s.changed
-            ? <span key={i} style={{ background: bg, borderRadius: 2 }}>{s.text || ' '}</span>
-            : <span key={i}>{s.text}</span>
-          )}
-        </>
-      );
-    }
-    return <span>{text || ' '}</span>;
-  };
-
   const candidates = notes;
   const filteredCandidates = useMemo(() => {
     const q = pickerSearch.trim().toLowerCase();
@@ -633,23 +531,19 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
   };
 
-  const renderRows = () => {
+  const renderGutterRows = () => {
     rowRefs.current = [];
     if (rows.length === 0) {
       return (
         <div style={{
-          padding: 40, textAlign: 'center', color: colors.textDim,
-          fontSize: 13, fontWeight: 600
+          paddingTop: 40, textAlign: 'center', color: colors.textDim,
+          fontSize: 11, fontWeight: 700
         }}>
-          Both sides are empty. Pick a file or start typing to see differences.
+          NO DIFF
         </div>
       );
     }
     return rows.map((r, idx) => {
-      const segs = r.kind === 'modify' && r.leftText != null && r.rightText != null
-        ? inlineDiff(r.leftText, r.rightText)
-        : null;
-
       const isCurrentChunkStart =
         currentChunkIdx >= 0 &&
         currentChunkIdx < chunks.length &&
@@ -663,9 +557,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           key={idx}
           ref={el => { rowRefs.current[idx] = el; }}
           style={{
-            display: 'flex', minHeight: lineHeight, width: '100%',
+            display: 'flex', alignItems: 'stretch',
+            minHeight: lineHeight, width: centerGutterWidth,
             position: 'relative',
-            opacity: dim
+            opacity: dim,
+            background: centerGutterBgFor(r.kind),
+            borderLeft: `1px solid ${colors.border}`,
+            borderRight: `1px solid ${colors.border}`,
+            userSelect: 'none',
+            fontVariantNumeric: 'tabular-nums'
           }}
         >
           {isCurrentChunkStart && (
@@ -676,62 +576,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               opacity: 1
             }} />
           )}
-
-          {/* LEFT TEXT */}
           <div style={{
-            flex: 1, minWidth: 0, padding: '0 12px',
-            background: rowBgFor(r.kind, 'left'),
-            whiteSpace: 'pre', lineHeight: `${lineHeight}px`,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-            fontSize, color: colors.text,
-            textAlign: 'left',
-            overflow: 'hidden'
-          }}>
-            {renderInline(r.leftText, segs?.aSegs ?? null, 'left', r.kind)}
-          </div>
-
-          {/* CENTER GUTTER */}
+            width: numCol, padding: '0 8px', textAlign: 'right',
+            color: r.kind === 'remove' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'remove') : colors.gutterText,
+            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
+            fontWeight: r.kind !== 'equal' ? 700 : 500
+          }}>{r.leftNum ?? ''}</div>
           <div style={{
-            width: centerGutterWidth, flexShrink: 0,
-            display: 'flex', alignItems: 'stretch',
-            background: centerGutterBgFor(r.kind),
-            borderLeft: `1px solid ${colors.border}`,
-            borderRight: `1px solid ${colors.border}`,
-            userSelect: 'none',
-            fontVariantNumeric: 'tabular-nums'
-          }}>
-            <div style={{
-              width: numCol, padding: '0 8px', textAlign: 'right',
-              color: r.kind === 'remove' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'remove') : colors.gutterText,
-              fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-              fontWeight: r.kind !== 'equal' ? 700 : 500
-            }}>{r.leftNum ?? ''}</div>
-            <div style={{
-              width: markerCol, textAlign: 'center',
-              color: markerColorFor(r.kind),
-              fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-              fontWeight: 800
-            }}>{markerFor(r.kind)}</div>
-            <div style={{
-              width: numCol, padding: '0 8px', textAlign: 'left',
-              color: r.kind === 'add' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'add') : colors.gutterText,
-              fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-              fontWeight: r.kind !== 'equal' ? 700 : 500
-            }}>{r.rightNum ?? ''}</div>
-          </div>
-
-          {/* RIGHT TEXT */}
+            width: markerCol, textAlign: 'center',
+            color: markerColorFor(r.kind),
+            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
+            fontWeight: 800
+          }}>{markerFor(r.kind)}</div>
           <div style={{
-            flex: 1, minWidth: 0, padding: '0 12px',
-            background: rowBgFor(r.kind, 'right'),
-            whiteSpace: 'pre', lineHeight: `${lineHeight}px`,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-            fontSize, color: colors.text,
-            textAlign: 'left',
-            overflow: 'hidden'
-          }}>
-            {renderInline(r.rightText, segs?.bSegs ?? null, 'right', r.kind)}
-          </div>
+            width: numCol, padding: '0 8px', textAlign: 'left',
+            color: r.kind === 'add' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'add') : colors.gutterText,
+            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
+            fontWeight: r.kind !== 'equal' ? 700 : 500
+          }}>{r.rightNum ?? ''}</div>
         </div>
       );
     });
@@ -831,14 +693,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     );
   };
 
-  // Sync vertical scroll across the two panes. Marker prevents feedback loops.
   const syncScroll = useCallback((from: Side | 'gutter', scrollTop: number) => {
-    if (syncingScrollRef.current && syncingScrollRef.current !== (from as any)) return;
-    syncingScrollRef.current = from as Side;
-    const other = from === 'left' ? rightPaneRef.current : leftPaneRef.current;
-    if (other && Math.abs(other.scrollTop - scrollTop) > 1) {
-      other.scrollTop = scrollTop;
-    }
+    if (syncingScrollRef.current && syncingScrollRef.current !== from) return;
+    syncingScrollRef.current = from;
+    const targets = [
+      { key: 'left' as const, ref: leftPaneRef },
+      { key: 'right' as const, ref: rightPaneRef },
+      { key: 'gutter' as const, ref: gutterRef },
+    ];
+    targets.forEach(({ key, ref }) => {
+      if (key === from || !ref.current) return;
+      if (Math.abs(ref.current.scrollTop - scrollTop) > 1) {
+        ref.current.scrollTop = scrollTop;
+      }
+    });
     requestAnimationFrame(() => { syncingScrollRef.current = null; });
   }, []);
 
@@ -1125,7 +993,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
       {/* Body */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
-        {/* LEFT editable pane */}
         <LivePane
           side="left"
           text={leftText}
@@ -1136,18 +1003,37 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
-          dimUnchanged={dimUnchanged}
           rowBgFor={rowBgFor}
           toolbar={editToolbar('left')}
         />
 
-        {/* Middle separator strip — purely visual */}
         <div style={{
-          width: 1, flexShrink: 0,
-          background: colors.borderStrong
-        }} />
+          width: centerGutterWidth, flexShrink: 0,
+          display: 'flex', flexDirection: 'column',
+          background: colors.gutterBg
+        }}>
+          <div style={{
+            height: 36, flexShrink: 0,
+            background: colors.gutterBg,
+            borderLeft: `1px solid ${colors.border}`,
+            borderRight: `1px solid ${colors.border}`,
+            borderBottom: `1px solid ${colors.border}`
+          }} />
+          <div
+            ref={gutterRef}
+            onScroll={e => syncScroll('gutter', e.currentTarget.scrollTop)}
+            className="dv-scroll"
+            style={{
+              flex: 1, overflow: 'hidden',
+              background: colors.gutterBg
+            }}
+          >
+            <div style={{ minHeight: '100%', height: Math.max(rows.length * lineHeight + 40, 0) }}>
+              {renderGutterRows()}
+            </div>
+          </div>
+        </div>
 
-        {/* RIGHT editable pane */}
         <LivePane
           side="right"
           text={rightText}
@@ -1158,7 +1044,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
-          dimUnchanged={dimUnchanged}
           rowBgFor={rowBgFor}
           toolbar={editToolbar('right')}
           autoFocus
