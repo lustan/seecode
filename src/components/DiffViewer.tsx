@@ -151,7 +151,6 @@ function EditablePane(props: {
   onScroll: (scrollTop: number, fromSide: Side) => void;
   currentHunkIdx: number;
   toolbar: React.ReactNode;
-  dim: boolean;
   autoFocus?: boolean;
   /** Extra space appended below the document so both panes have matching
    *  total scroll heights — keeps scroll-sync aligned at the bottom. */
@@ -160,7 +159,7 @@ function EditablePane(props: {
   const {
     side, text, onChange, hunks,
     lineHeight, fontSize, colors, paneRef, textareaRef, onScroll,
-    currentHunkIdx, toolbar, dim, autoFocus, bottomPadding
+    currentHunkIdx, toolbar, autoFocus, bottomPadding
   } = props;
 
   const numColWidth = 50;
@@ -264,8 +263,6 @@ function EditablePane(props: {
             fontVariantNumeric: 'tabular-nums'
           }}>
             {lineKinds.map((k, idx) => {
-              const isEqual = k === 'equal';
-              const opacity = isEqual && dim ? 0.55 : 1;
               return (
                 <div
                   key={idx}
@@ -281,7 +278,6 @@ function EditablePane(props: {
                     fontSize: gutterFontSize,
                     lineHeight: `${lineHeight}px`,
                     fontWeight: k !== 'equal' ? 700 : 500,
-                    opacity,
                     userSelect: 'none'
                   }}
                 >
@@ -466,8 +462,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
-
-  const [dimUnchanged, setDimUnchanged] = useState(true);
 
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
@@ -1013,22 +1007,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         .dv-picker-item:hover { background: ${colors.pickerItemHover}; }
         .dv-picker-item-title { font-size: 12px; font-weight: 700; color: ${colors.text}; display: flex; align-items: center; gap: 6px; }
         .dv-picker-item-meta { font-size: 10px; color: ${colors.textDim}; font-weight: 600; }
-        .dv-toggle-btn {
-          height: 28px; padding: 0 10px; border-radius: 7px;
-          border: 1px solid ${colors.border};
-          background: transparent; color: ${colors.textSec};
-          font-size: 11px; font-weight: 700;
-          cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
-          transition: all 0.15s; outline: none;
-        }
-        .dv-toggle-btn:hover {
-          color: ${colors.accent}; border-color: ${colors.accent};
-          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.10)' : 'rgba(59, 130, 246, 0.06)'};
-        }
-        .dv-toggle-btn.active {
-          color: ${colors.accent}; border-color: ${colors.accent};
-          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.14)' : 'rgba(59, 130, 246, 0.08)'};
-        }
       `}</style>
 
       {/* Header */}
@@ -1068,21 +1046,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button
-            className={`dv-toggle-btn ${dimUnchanged ? 'active' : ''}`}
-            onClick={() => setDimUnchanged(d => !d)}
-            title={dimUnchanged ? 'Show all lines at full brightness' : 'Dim unchanged lines to focus on diffs'}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="4"></circle>
-              <line x1="12" y1="2" x2="12" y2="5"></line>
-              <line x1="12" y1="19" x2="12" y2="22"></line>
-              <line x1="2" y1="12" x2="5" y2="12"></line>
-              <line x1="19" y1="12" x2="22" y2="12"></line>
-            </svg>
-            {dimUnchanged ? 'Focus diffs' : 'Show all'}
-          </button>
-
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: 3, borderRadius: 8,
@@ -1151,7 +1114,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('left')}
-          dim={dimUnchanged}
           bottomPadding={leftBottomPad}
         />
 
@@ -1194,7 +1156,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('right')}
-          dim={dimUnchanged}
           bottomPadding={rightBottomPad}
           autoFocus
         />
