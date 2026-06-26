@@ -147,6 +147,7 @@ function EditablePane(props: {
   fontSize: number;
   colors: DiffColors;
   paneRef: React.RefObject<HTMLDivElement>;
+  textareaRef?: React.RefObject<HTMLTextAreaElement>;
   onScroll: (scrollTop: number, fromSide: Side) => void;
   currentHunkIdx: number;
   toolbar: React.ReactNode;
@@ -158,7 +159,7 @@ function EditablePane(props: {
 }) {
   const {
     side, text, onChange, hunks,
-    lineHeight, fontSize, colors, paneRef, onScroll,
+    lineHeight, fontSize, colors, paneRef, textareaRef, onScroll,
     currentHunkIdx, toolbar, dim, autoFocus, bottomPadding
   } = props;
 
@@ -251,9 +252,11 @@ function EditablePane(props: {
           position: 'relative',
           minHeight: '100%',
           height: Math.max(docHeight + bottomPadding, 0),
-          display: 'flex'
+          display: 'flex',
+          flexDirection: side === 'left' ? 'row-reverse' : 'row'
         }}>
-          {/* Line number column */}
+          {/* Line number column — sits on the INNER side of each pane so the
+              two number columns end up next to the center ribbon. */}
           <div style={{
             width: numColWidth, flexShrink: 0,
             position: 'relative',
@@ -325,6 +328,7 @@ function EditablePane(props: {
               ))}
             </div>
             <textarea
+              ref={textareaRef}
               autoFocus={autoFocus}
               value={text}
               onChange={e => onChange(e.target.value)}
@@ -475,6 +479,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
+  const leftTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const rightTextareaRef = useRef<HTMLTextAreaElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef<Side | null>(null);
 
@@ -488,14 +494,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const leftLineCount = leftText === '' ? 0 : leftText.split('\n').length;
   const rightLineCount = rightText === '' ? 0 : rightText.split('\n').length;
 
-  // Pad the shorter side so both panes have identical total scroll heights.
-  // Without this, scrolling to the bottom on the longer side would clamp the
-  // shorter side at its own (smaller) maxScrollTop and the diff rows drift
-  // out of alignment near the end of the document.
+  // Use the SAME small cushion on both sides — do NOT equalize total scroll
+  // heights. The natural scrollHeight difference between the two panes is
+  // exactly (R-L)*lineHeight, which matches the cumulative hunk offset the
+  // scroll-sync mapping produces. Forcing equal heights makes the shorter
+  // side map past its own max-scroll and the bottom drifts out of alignment.
   const baseBottomPad = 40;
-  const maxLines = Math.max(leftLineCount, rightLineCount);
-  const leftBottomPad = baseBottomPad + (maxLines - leftLineCount) * lineHeight;
-  const rightBottomPad = baseBottomPad + (maxLines - rightLineCount) * lineHeight;
+  const leftBottomPad = baseBottomPad;
+  const rightBottomPad = baseBottomPad;
+  void leftLineCount; void rightLineCount;
 
   const hunks = useMemo(() => {
     const a = leftText.split('\n');
@@ -563,11 +570,29 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     if (syncingScrollRef.current && syncingScrollRef.current !== fromSide) return;
     syncingScrollRef.current = fromSide;
 
-    const fromLine = scrollTop / lineHeight;
-    const toLine = mapLineToOther(fromLine, fromSide);
+    const fromRef = fromSide === 'left' ? leftPaneRef : rightPaneRef;
     const otherRef = fromSide === 'left' ? rightPaneRef : leftPaneRef;
-    if (otherRef.current) {
-      const target = Math.max(0, toLine * lineHeight);
+
+    if (otherRef.current && fromRef.current) {
+      const fromMax = Math.max(0, fromRef.current.scrollHeight - fromRef.current.clientHeight);
+      const otherMax = Math.max(0, otherRef.current.scrollHeight - otherRef.current.clientHeight);
+
+      // Boundary snap — when the source side is at (or within 1px of) its
+      // own top/bottom, slam the other side to the matching edge. Skips the
+      // line-anchored mapping, which can be off by a fractional line at the
+      // limits and can also anchor into a near-bottom hunk instead of letting
+      // the other side roll all the way down.
+      let target: number;
+      if (scrollTop >= fromMax - 1) {
+        target = otherMax;
+      } else if (scrollTop <= 1) {
+        target = 0;
+      } else {
+        const fromLine = scrollTop / lineHeight;
+        const toLine = mapLineToOther(fromLine, fromSide);
+        target = Math.max(0, Math.min(otherMax, toLine * lineHeight));
+      }
+
       if (Math.abs(otherRef.current.scrollTop - target) > 1) {
         otherRef.current.scrollTop = target;
         if (fromSide === 'left') setRightScrollTop(target);
@@ -591,8 +616,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         const target = Math.max(0, rLine * lineHeight - rightPaneRef.current.clientHeight / 3);
         rightPaneRef.current.scrollTo({ top: target, behavior: 'smooth' });
       }
+      // Move the caret to the start of the corresponding line on the RIGHT
+      // pane so the user can start editing the diff target immediately.
+      const ta = rightTextareaRef.current;
+      if (ta) {
+        // Pure additions/removals: if right side is empty for this hunk, use
+        // rightFirst as the insertion line (it equals rightLast+1). Otherwise
+        // jump to the start of the first changed line on the right.
+        const lines = rightText.split('\n');
+        const targetLine = Math.min(Math.max(0, rLine), Math.max(0, lines.length - 1));
+        let offset = 0;
+        for (let i = 0; i < targetLine; i++) {
+          offset += lines[i].length + 1; // +1 for the newline
+        }
+        ta.focus({ preventScroll: true });
+        ta.setSelectionRange(offset, offset);
+      }
     });
-  }, [hunks, lineHeight]);
+  }, [hunks, lineHeight, rightText]);
 
   const goPrevDiff = useCallback(() => {
     if (hunks.length === 0) return;
@@ -945,11 +986,19 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           box-shadow: 0 20px 60px rgba(0,0,0,0.4);
           animation: diffSlide 0.18s ease-out; overflow: hidden;
         }
+        .dv-picker-search-wrap {
+          position: relative; border-bottom: 1px solid ${colors.border};
+          display: flex; align-items: center;
+        }
+        .dv-picker-search-icon {
+          position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+          color: ${colors.textDim}; pointer-events: none; display: flex;
+        }
         .dv-picker-search {
-          width: 100%; height: 38px; padding: 0 14px;
+          width: 100%; height: 46px; padding: 0 14px 0 38px;
           border: none; outline: none; background: transparent;
-          border-bottom: 1px solid ${colors.border};
           color: ${colors.text}; font-size: 13px; font-weight: 600;
+          letter-spacing: 0.01em;
         }
         .dv-picker-search::placeholder { color: ${colors.textDim}; font-weight: 600; }
         .dv-picker-item {
@@ -1098,6 +1147,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           fontSize={fontSize}
           colors={colors}
           paneRef={leftPaneRef}
+          textareaRef={leftTextareaRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('left')}
@@ -1140,6 +1190,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           fontSize={fontSize}
           colors={colors}
           paneRef={rightPaneRef}
+          textareaRef={rightTextareaRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('right')}
@@ -1166,13 +1217,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                   </svg>
                 </button>
               </div>
-              <input
-                autoFocus
-                className="dv-picker-search"
-                placeholder="Search files by name or content…"
-                value={pickerSearch}
-                onChange={e => setPickerSearch(e.target.value)}
-              />
+              <div className="dv-picker-search-wrap">
+                <span className="dv-picker-search-icon">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="7"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                </span>
+                <input
+                  autoFocus
+                  className="dv-picker-search"
+                  placeholder="Search files by name or content…"
+                  value={pickerSearch}
+                  onChange={e => setPickerSearch(e.target.value)}
+                />
+              </div>
               <div style={{ overflow: 'auto', flex: 1 }} className="dv-scroll">
                 <div
                   className="dv-picker-item special"
