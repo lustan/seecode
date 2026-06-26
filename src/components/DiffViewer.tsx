@@ -15,19 +15,25 @@ type DiffOp =
   | { type: 'remove'; left: number; text: string }
   | { type: 'add'; right: number; text: string };
 
-type Row = {
-  kind: 'equal' | 'remove' | 'add' | 'modify';
-  leftNum?: number;
-  rightNum?: number;
-  leftText?: string;
-  rightText?: string;
-};
+type RowKind = 'equal' | 'remove' | 'add' | 'modify';
 
 type Side = 'left' | 'right';
 
 type PaneSource =
   | { kind: 'note'; noteId: string }
   | { kind: 'blank' };
+
+// One IDEA-style hunk: a contiguous diff region with its line ranges on
+// each ORIGINAL side. The SVG ribbon connects [leftFirst..leftLast+1] on
+// the left to [rightFirst..rightLast+1] on the right.
+type Hunk = {
+  // Inclusive 0-based line indices in the original left/right text.
+  // If a hunk is a pure addition the left range collapses (leftFirst = leftLast+1 = insertion point).
+  // If a hunk is a pure deletion the right range collapses similarly.
+  leftFirst: number; leftLast: number;
+  rightFirst: number; rightLast: number;
+  kind: 'add' | 'remove' | 'modify';
+};
 
 // LCS line diff
 function computeDiff(a: string[], b: string[]): DiffOp[] {
@@ -58,184 +64,280 @@ function computeDiff(a: string[], b: string[]): DiffOp[] {
   return ops;
 }
 
-function buildRows(ops: DiffOp[]): Row[] {
-  const rows: Row[] = [];
+// Group ops into hunks. Each hunk = a run of non-equal ops, holding the
+// original-line ranges on each side.
+function buildHunks(ops: DiffOp[], leftTotal: number, rightTotal: number): Hunk[] {
+  const hunks: Hunk[] = [];
   let i = 0;
+  let li = 0, ri = 0;
   while (i < ops.length) {
     const op = ops[i];
     if (op.type === 'equal') {
-      rows.push({
-        kind: 'equal',
-        leftNum: op.left + 1, leftText: op.text,
-        rightNum: op.right + 1, rightText: op.text
-      });
+      li = op.left + 1;
+      ri = op.right + 1;
       i++;
-    } else {
-      const removes: { left: number; text: string }[] = [];
-      const adds: { right: number; text: string }[] = [];
-      while (i < ops.length && (ops[i].type === 'remove' || ops[i].type === 'add')) {
-        const o = ops[i];
-        if (o.type === 'remove') removes.push({ left: o.left, text: o.text });
-        else if (o.type === 'add') adds.push({ right: o.right, text: o.text });
-        i++;
-      }
-      const pairs = Math.min(removes.length, adds.length);
-      for (let k = 0; k < pairs; k++) {
-        rows.push({
-          kind: 'modify',
-          leftNum: removes[k].left + 1, leftText: removes[k].text,
-          rightNum: adds[k].right + 1, rightText: adds[k].text
-        });
-      }
-      for (let k = pairs; k < removes.length; k++) {
-        rows.push({ kind: 'remove', leftNum: removes[k].left + 1, leftText: removes[k].text });
-      }
-      for (let k = pairs; k < adds.length; k++) {
-        rows.push({ kind: 'add', rightNum: adds[k].right + 1, rightText: adds[k].text });
-      }
+      continue;
     }
-  }
-  return rows;
-}
-
-// Build diff chunks: maximal runs of non-equal rows
-function buildChunks(rows: Row[]): { start: number; end: number }[] {
-  const chunks: { start: number; end: number }[] = [];
-  let i = 0;
-  while (i < rows.length) {
-    if (rows[i].kind !== 'equal') {
-      const start = i;
-      while (i < rows.length && rows[i].kind !== 'equal') i++;
-      chunks.push({ start, end: i - 1 });
-    } else {
+    // start of a hunk
+    let removeCount = 0;
+    let addCount = 0;
+    const leftFirst = li;
+    const rightFirst = ri;
+    while (i < ops.length && ops[i].type !== 'equal') {
+      const o = ops[i];
+      if (o.type === 'remove') { removeCount++; li = o.left + 1; }
+      else if (o.type === 'add') { addCount++; ri = o.right + 1; }
       i++;
     }
+    const leftLast = leftFirst + removeCount - 1;     // -1 if no removes
+    const rightLast = rightFirst + addCount - 1;       // -1 if no adds
+    let kind: 'add' | 'remove' | 'modify';
+    if (removeCount > 0 && addCount > 0) kind = 'modify';
+    else if (addCount > 0) kind = 'add';
+    else kind = 'remove';
+    hunks.push({ leftFirst, leftLast, rightFirst, rightLast, kind });
   }
-  return chunks;
+  // Guard against unused params warnings
+  void leftTotal; void rightTotal;
+  return hunks;
 }
 
 // =============================================================================
-// LivePane — editable side with a colored highlight overlay aligned to text rows
+// Theme colors
 // =============================================================================
-type LiveColors = {
+type DiffColors = {
+  bg: string;
   panelBg: string;
+  headerBg: string;
   border: string;
+  borderStrong: string;
   text: string;
+  textSec: string;
   textDim: string;
   gutterBg: string;
+  gutterText: string;
   removeBg: string;
+  removeGutter: string;
+  removeStrong: string;
+  removeRibbon: string;
   addBg: string;
+  addGutter: string;
+  addStrong: string;
+  addRibbon: string;
   modifyBg: string;
+  modifyGutter: string;
+  modifyStrong: string;
+  modifyRibbon: string;
   accent: string;
+  pickerBg: string;
+  pickerItemHover: string;
 };
 
-function LivePane(props: {
-  side: 'left' | 'right';
+// =============================================================================
+// EditablePane — a single full-document textarea per side. Per-line color
+// bands and a line-number gutter sit behind it as overlays. Heights match the
+// side's own line count, NOT the merged row count → IDEA-style natural heights.
+// =============================================================================
+function EditablePane(props: {
+  side: Side;
   text: string;
   onChange: (v: string) => void;
-  lineKinds: ('equal' | 'remove' | 'add' | 'modify')[];
-  paneRef: React.RefObject<HTMLDivElement>;
-  onScrollSync: (from: 'left' | 'right' | 'gutter', scrollTop: number) => void;
+  hunks: Hunk[];
   lineHeight: number;
   fontSize: number;
-  colors: LiveColors;
-  rowBgFor: (kind: 'equal' | 'remove' | 'add' | 'modify', side: 'left' | 'right') => string;
+  colors: DiffColors;
+  paneRef: React.RefObject<HTMLDivElement>;
+  onScroll: (scrollTop: number, fromSide: Side) => void;
+  currentHunkIdx: number;
   toolbar: React.ReactNode;
+  dim: boolean;
   autoFocus?: boolean;
+  /** Extra space appended below the document so both panes have matching
+   *  total scroll heights — keeps scroll-sync aligned at the bottom. */
+  bottomPadding: number;
 }) {
   const {
-    side, text, onChange, lineKinds, paneRef, onScrollSync,
-    lineHeight, fontSize, colors, rowBgFor, toolbar, autoFocus
+    side, text, onChange, hunks,
+    lineHeight, fontSize, colors, paneRef, onScroll,
+    currentHunkIdx, toolbar, dim, autoFocus, bottomPadding
   } = props;
 
-  const taRef = React.useRef<HTMLTextAreaElement>(null);
-  const overlayRef = React.useRef<HTMLDivElement>(null);
+  const numColWidth = 50;
+  const gutterFontSize = Math.max(10, fontSize - 2);
 
-  // Total lines drives the document height (so empty trailing lines also get a band).
-  const totalLines = text === '' ? 1 : text.split('\n').length;
-  const docHeight = totalLines * lineHeight;
+  const totalLines = text === '' ? 0 : text.split('\n').length;
+  const docHeight = Math.max(totalLines * lineHeight, 0);
 
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    onScrollSync(side, e.currentTarget.scrollTop);
+  // Per-line kind, indexed by 0-based line in THIS side.
+  const lineKinds = useMemo<RowKind[]>(() => {
+    const out: RowKind[] = new Array(Math.max(totalLines, 0)).fill('equal');
+    for (const h of hunks) {
+      if (side === 'left') {
+        if (h.leftLast >= h.leftFirst) {
+          for (let i = h.leftFirst; i <= h.leftLast; i++) {
+            if (i >= 0 && i < out.length) out[i] = h.kind;
+          }
+        }
+      } else {
+        if (h.rightLast >= h.rightFirst) {
+          for (let i = h.rightFirst; i <= h.rightLast; i++) {
+            if (i >= 0 && i < out.length) out[i] = h.kind;
+          }
+        }
+      }
+    }
+    return out;
+  }, [hunks, totalLines, side]);
+
+  const lineBg = (kind: RowKind): string => {
+    if (kind === 'equal') return 'transparent';
+    if (kind === 'modify') return colors.modifyBg;
+    if (kind === 'remove') return colors.removeBg;
+    if (kind === 'add') return colors.addBg;
+    return 'transparent';
   };
 
-  // Live panes use the shared center gutter for line numbers.
+  const gutterLineBg = (kind: RowKind): string => {
+    if (kind === 'equal') return 'transparent';
+    if (kind === 'modify') return colors.modifyGutter;
+    if (kind === 'remove') return colors.removeGutter;
+    if (kind === 'add') return colors.addGutter;
+    return 'transparent';
+  };
 
-  // Render highlight bands — one absolutely-positioned div per line that isn't equal.
-  // Equal lines need no band; the panel background shows through.
-  const bands: React.ReactNode[] = [];
-  for (let i = 0; i < lineKinds.length; i++) {
-    const kind = lineKinds[i];
-    if (kind === 'equal') continue;
-    const bg = rowBgFor(kind, side);
-    if (bg === 'transparent') continue;
-    bands.push(
-      <div
-        key={i}
-        style={{
-          position: 'absolute',
-          left: 0, right: 0,
-          top: i * lineHeight,
-          height: lineHeight,
-          background: bg,
-          pointerEvents: 'none'
-        }}
-      />
-    );
-  }
+  const gutterLineColor = (kind: RowKind): string => {
+    if (kind === 'modify') return colors.modifyStrong;
+    if (kind === 'remove') return colors.removeStrong;
+    if (kind === 'add') return colors.addStrong;
+    return colors.gutterText;
+  };
 
-  // Dim unchanged: overlay a translucent veil on the textarea text by lowering its color alpha
-  // when the line is equal. We can't per-line style textarea content, so we keep the text fully
-  // visible and dim via the highlight overlay only (cheap visual cue).
+  // Hunks where THIS side is empty — i.e. pure deletions on the right pane,
+  // pure additions on the left pane. We mark the collapse point with a thin
+  // colored horizontal line so the user can see WHERE the missing block lives
+  // relative to the other side.
+  const collapseMarkers = useMemo(() => {
+    const out: { y: number; color: string }[] = [];
+    for (const h of hunks) {
+      if (side === 'left' && h.kind === 'add') {
+        // left collapses → mark at h.leftFirst (= h.leftLast+1 since empty)
+        out.push({ y: h.leftFirst * lineHeight, color: colors.addStrong });
+      } else if (side === 'right' && h.kind === 'remove') {
+        out.push({ y: h.rightFirst * lineHeight, color: colors.removeStrong });
+      }
+    }
+    return out;
+  }, [hunks, side, lineHeight, colors.addStrong, colors.removeStrong]);
+
+  // currentHunkIdx is currently unreferenced — silence unused warnings.
+  void currentHunkIdx;
 
   return (
     <div style={{
       flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-      background: colors.panelBg,
-      borderRight: side === 'left' ? `1px solid ${colors.border}` : 'none'
+      background: colors.panelBg
     }}>
       {toolbar}
       <div
         ref={paneRef}
-        onScroll={handleScroll}
-        className="dv-scroll"
+        onScroll={e => onScroll(e.currentTarget.scrollTop, side)}
+        className={side === 'left' ? 'dv-scroll dv-no-scrollbar' : 'dv-scroll'}
         style={{
           position: 'relative', flex: 1, overflow: 'auto',
           background: colors.panelBg
         }}
       >
-        {/* Inner sizer to drive overflow with the document height + min content */}
         <div style={{
           position: 'relative',
           minHeight: '100%',
-          height: Math.max(docHeight + 40, 0),
+          height: Math.max(docHeight + bottomPadding, 0),
           display: 'flex'
         }}>
-          {/* Text region: bands overlay + textarea */}
+          {/* Line number column */}
+          <div style={{
+            width: numColWidth, flexShrink: 0,
+            position: 'relative',
+            background: colors.gutterBg,
+            fontVariantNumeric: 'tabular-nums'
+          }}>
+            {lineKinds.map((k, idx) => {
+              const isEqual = k === 'equal';
+              const opacity = isEqual && dim ? 0.55 : 1;
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    position: 'absolute',
+                    top: idx * lineHeight,
+                    left: 0, right: 0,
+                    height: lineHeight,
+                    padding: '0 8px',
+                    textAlign: side === 'left' ? 'right' : 'left',
+                    color: gutterLineColor(k),
+                    background: gutterLineBg(k),
+                    fontSize: gutterFontSize,
+                    lineHeight: `${lineHeight}px`,
+                    fontWeight: k !== 'equal' ? 700 : 500,
+                    opacity,
+                    userSelect: 'none'
+                  }}
+                >
+                  {idx + 1}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Text area + per-line color bands behind it */}
           <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-            <div
-              ref={overlayRef}
-              style={{
-                position: 'absolute', inset: 0,
-                pointerEvents: 'none'
-              }}
-            >
-              {bands}
+            <div style={{
+              position: 'absolute', inset: 0, pointerEvents: 'none'
+            }}>
+              {lineKinds.map((k, idx) => {
+                if (k === 'equal') return null;
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      position: 'absolute',
+                      top: idx * lineHeight,
+                      left: 0, right: 0,
+                      height: lineHeight,
+                      background: lineBg(k)
+                    }}
+                  />
+                );
+              })}
+              {/* Collapse markers — a thin colored line at the y-position where
+                  the OPPOSITE side has a block that this side doesn't. */}
+              {collapseMarkers.map((m, i) => (
+                <div
+                  key={`cm-${i}`}
+                  style={{
+                    position: 'absolute',
+                    top: m.y - 1,
+                    left: 0, right: 0,
+                    height: 2,
+                    background: m.color,
+                    opacity: 0.85
+                  }}
+                />
+              ))}
             </div>
             <textarea
-              ref={taRef}
+              autoFocus={autoFocus}
               value={text}
               onChange={e => onChange(e.target.value)}
               placeholder={`${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…`}
               spellCheck={false}
-              autoFocus={autoFocus}
               wrap="off"
               style={{
                 position: 'relative', zIndex: 1,
-                width: '100%', minHeight: '100%',
-                height: Math.max(docHeight + 40, 0),
+                width: '100%',
+                height: Math.max(docHeight + bottomPadding, '100%' as any),
+                minHeight: '100%',
+                padding: '0 12px',
                 resize: 'none', outline: 'none', border: 'none',
-                padding: `0 12px`,
                 background: 'transparent',
                 color: colors.text,
                 caretColor: colors.accent,
@@ -244,7 +346,8 @@ function LivePane(props: {
                 lineHeight: `${lineHeight}px`,
                 tabSize: 2,
                 whiteSpace: 'pre',
-                overflow: 'hidden'
+                overflow: 'hidden',
+                display: 'block'
               }}
             />
           </div>
@@ -254,8 +357,99 @@ function LivePane(props: {
   );
 }
 
+// =============================================================================
+// ConnectorRibbon — IDEA-style middle strip. Draws a tinted trapezoid (or thin
+// line for pure insertions/deletions) between corresponding left/right hunk
+// regions, accounting for the current scroll positions of each pane.
+// =============================================================================
+function ConnectorRibbon(props: {
+  width: number;
+  height: number;
+  hunks: Hunk[];
+  currentHunkIdx: number;
+  lineHeight: number;
+  leftScrollTop: number;
+  rightScrollTop: number;
+  colors: DiffColors;
+  onHunkClick: (idx: number) => void;
+}) {
+  const {
+    width, height, hunks, currentHunkIdx, lineHeight,
+    leftScrollTop, rightScrollTop, colors, onHunkClick
+  } = props;
+
+  const ribbonColor = (k: RowKind): string => {
+    if (k === 'modify') return colors.modifyRibbon;
+    if (k === 'remove') return colors.removeRibbon;
+    if (k === 'add') return colors.addRibbon;
+    return 'transparent';
+  };
+  const strokeColor = (k: RowKind): string => {
+    if (k === 'modify') return colors.modifyStrong;
+    if (k === 'remove') return colors.removeStrong;
+    if (k === 'add') return colors.addStrong;
+    return colors.border;
+  };
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      style={{ display: 'block', position: 'absolute', inset: 0, pointerEvents: 'auto' }}
+    >
+      {hunks.map((h, idx) => {
+        // Y in local pane viewport coordinates (after subtracting scrollTop).
+        const lTop = h.leftFirst * lineHeight - leftScrollTop;
+        const lBot = (h.leftLast + 1) * lineHeight - leftScrollTop;
+        const rTop = h.rightFirst * lineHeight - rightScrollTop;
+        const rBot = (h.rightLast + 1) * lineHeight - rightScrollTop;
+
+        // Pure addition → left range is empty (leftLast < leftFirst).
+        const leftEmpty = h.leftLast < h.leftFirst;
+        const rightEmpty = h.rightLast < h.rightFirst;
+        const lTopUse = leftEmpty ? lTop : lTop;
+        const lBotUse = leftEmpty ? lTop : lBot;
+        const rTopUse = rightEmpty ? rTop : rTop;
+        const rBotUse = rightEmpty ? rTop : rBot;
+
+        // Cull entirely-offscreen ribbons.
+        const minY = Math.min(lTopUse, rTopUse);
+        const maxY = Math.max(lBotUse, rBotUse);
+        if (maxY < -20 || minY > height + 20) return null;
+
+        const fill = ribbonColor(h.kind);
+        const stroke = strokeColor(h.kind);
+        const isCurrent = idx === currentHunkIdx;
+
+        // Build a smooth bezier-bounded trapezoid.
+        // Top edge: left(lTop) → right(rTop)
+        // Bottom edge: right(rBot) → left(lBot)
+        const midX = width / 2;
+        const cpOffset = width * 0.4;
+        const path =
+          `M 0 ${lTopUse} ` +
+          `C ${cpOffset} ${lTopUse}, ${width - cpOffset} ${rTopUse}, ${width} ${rTopUse} ` +
+          `L ${width} ${rBotUse} ` +
+          `C ${width - cpOffset} ${rBotUse}, ${cpOffset} ${lBotUse}, 0 ${lBotUse} ` +
+          `Z`;
+
+        return (
+          <g key={idx} onClick={() => onHunkClick(idx)} style={{ cursor: 'pointer' }}>
+            <path
+              d={path}
+              fill={fill}
+              stroke="none"
+              opacity={isCurrent ? 1 : 0.75}
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onClose }: Props) {
-  // Layout constants used by scroll math and the live-pane subcomponent.
+  // Layout constants used by scroll math and the panes.
   const lineHeight = Math.round(fontSize * 1.55);
 
   const [leftSrc, setLeftSrc] = useState<PaneSource>(
@@ -269,18 +463,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
-  // Dim unchanged lines instead of collapsing — collapsing isn't viable when both
-  // sides must stay fully editable.
   const [dimUnchanged, setDimUnchanged] = useState(true);
 
-  const [currentChunkIdx, setCurrentChunkIdx] = useState<number>(-1);
+  const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // Scroll state used by both ribbon SVG and cross-pane sync.
+  const [leftScrollTop, setLeftScrollTop] = useState(0);
+  const [rightScrollTop, setRightScrollTop] = useState(0);
+  const [ribbonHeight, setRibbonHeight] = useState(0);
+
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
-  const gutterRef = useRef<HTMLDivElement>(null);
-  const syncingScrollRef = useRef<Side | 'gutter' | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const syncingScrollRef = useRef<Side | null>(null);
 
   const leftTitle = leftSrc.kind === 'note'
     ? (notes.find(n => n.id === leftSrc.noteId)?.title || 'Untitled')
@@ -289,45 +485,29 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     ? (notes.find(n => n.id === rightSrc.noteId)?.title || 'Untitled')
     : 'untitled.txt';
 
-  const rows = useMemo(() => {
+  const leftLineCount = leftText === '' ? 0 : leftText.split('\n').length;
+  const rightLineCount = rightText === '' ? 0 : rightText.split('\n').length;
+
+  // Pad the shorter side so both panes have identical total scroll heights.
+  // Without this, scrolling to the bottom on the longer side would clamp the
+  // shorter side at its own (smaller) maxScrollTop and the diff rows drift
+  // out of alignment near the end of the document.
+  const baseBottomPad = 40;
+  const maxLines = Math.max(leftLineCount, rightLineCount);
+  const leftBottomPad = baseBottomPad + (maxLines - leftLineCount) * lineHeight;
+  const rightBottomPad = baseBottomPad + (maxLines - rightLineCount) * lineHeight;
+
+  const hunks = useMemo(() => {
     const a = leftText.split('\n');
     const b = rightText.split('\n');
     if (leftText === '') a.length = 0;
     if (rightText === '') b.length = 0;
-    return buildRows(computeDiff(a, b));
+    return buildHunks(computeDiff(a, b), a.length, b.length);
   }, [leftText, rightText]);
 
-  const chunks = useMemo(() => buildChunks(rows), [rows]);
-
-  // Per-line kind for each side, indexed by 0-based line number in that side's text.
-  type LineKind = 'equal' | 'remove' | 'add' | 'modify';
-  const leftLineKinds = useMemo<LineKind[]>(() => {
-    const total = leftText === '' ? 0 : leftText.split('\n').length;
-    const out: LineKind[] = new Array(total).fill('equal');
-    for (const r of rows) {
-      if (r.leftNum == null) continue;
-      const i = r.leftNum - 1;
-      if (i < 0 || i >= total) continue;
-      if (r.kind !== 'equal' && r.kind !== 'add') out[i] = r.kind;
-    }
-    return out;
-  }, [leftText, rows]);
-
-  const rightLineKinds = useMemo<LineKind[]>(() => {
-    const total = rightText === '' ? 0 : rightText.split('\n').length;
-    const out: LineKind[] = new Array(total).fill('equal');
-    for (const r of rows) {
-      if (r.rightNum == null) continue;
-      const i = r.rightNum - 1;
-      if (i < 0 || i >= total) continue;
-      if (r.kind !== 'equal' && r.kind !== 'remove') out[i] = r.kind;
-    }
-    return out;
-  }, [rightText, rows]);
-
   useEffect(() => {
-    setCurrentChunkIdx(chunks.length > 0 ? 0 : -1);
-  }, [chunks.length]);
+    setCurrentHunkIdx(hunks.length > 0 ? 0 : -1);
+  }, [hunks.length]);
 
   // auto-dismiss format error
   useEffect(() => {
@@ -336,39 +516,97 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return () => clearTimeout(t);
   }, [formatError]);
 
-  const scrollToChunk = useCallback((idx: number) => {
-    if (idx < 0 || idx >= chunks.length) return;
-    const first = rows[chunks[idx].start];
-    const leftLine = first.leftNum != null ? first.leftNum - 1 : null;
-    const rightLine = first.rightNum != null ? first.rightNum - 1 : null;
-    const fallbackLine = Math.max(0, chunks[idx].start);
+  // Track ribbon area height — needed for SVG sizing and viewport math.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const update = () => setRibbonHeight(el.clientHeight - 36 /* toolbar */);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Anchor scroll sync: when one side scrolls, find the line at its viewport
+  // top, map it through the nearest hunk to the corresponding line on the
+  // other side, scroll the other side so that line lands at the same y.
+  const mapLineToOther = useCallback((line: number, from: Side): number => {
+    // Equal regions outside hunks: identity offset relative to the previous hunk's end.
+    // Walk hunks; figure out cumulative offsets.
+    // Build a piecewise linear mapping on the fly.
+    let acc = 0; // offset = other - this
+    for (const h of hunks) {
+      const thisStart = from === 'left' ? h.leftFirst : h.rightFirst;
+      const thisEnd = from === 'left' ? h.leftLast : h.rightLast;
+      const otherStart = from === 'left' ? h.rightFirst : h.leftFirst;
+      const otherEnd = from === 'left' ? h.rightLast : h.leftLast;
+
+      if (line < thisStart) {
+        return line + acc;
+      }
+      const thisLen = Math.max(0, thisEnd - thisStart + 1);
+      const otherLen = Math.max(0, otherEnd - otherStart + 1);
+      if (line <= thisEnd && thisLen > 0) {
+        // inside this hunk on `from` side: anchor to other hunk top
+        return otherStart;
+      }
+      // past this hunk
+      acc += otherLen - thisLen;
+    }
+    return line + acc;
+  }, [hunks]);
+
+  const handleScroll = useCallback((scrollTop: number, fromSide: Side) => {
+    if (fromSide === 'left') setLeftScrollTop(scrollTop);
+    else setRightScrollTop(scrollTop);
+
+    if (syncingScrollRef.current && syncingScrollRef.current !== fromSide) return;
+    syncingScrollRef.current = fromSide;
+
+    const fromLine = scrollTop / lineHeight;
+    const toLine = mapLineToOther(fromLine, fromSide);
+    const otherRef = fromSide === 'left' ? rightPaneRef : leftPaneRef;
+    if (otherRef.current) {
+      const target = Math.max(0, toLine * lineHeight);
+      if (Math.abs(otherRef.current.scrollTop - target) > 1) {
+        otherRef.current.scrollTop = target;
+        if (fromSide === 'left') setRightScrollTop(target);
+        else setLeftScrollTop(target);
+      }
+    }
+    requestAnimationFrame(() => { syncingScrollRef.current = null; });
+  }, [lineHeight, mapLineToOther]);
+
+  const scrollToHunk = useCallback((idx: number) => {
+    if (idx < 0 || idx >= hunks.length) return;
+    const h = hunks[idx];
     requestAnimationFrame(() => {
-      [
-        { ref: leftPaneRef, line: leftLine ?? fallbackLine },
-        { ref: rightPaneRef, line: rightLine ?? fallbackLine },
-        { ref: gutterRef, line: fallbackLine },
-      ].forEach(({ ref, line }) => {
-        if (!ref.current) return;
-        const top = line * lineHeight;
-        const desired = Math.max(0, top - ref.current.clientHeight / 3);
-        ref.current.scrollTo({ top: desired, behavior: 'smooth' });
-      });
+      const lLine = h.leftFirst;
+      const rLine = h.rightFirst;
+      if (leftPaneRef.current) {
+        const target = Math.max(0, lLine * lineHeight - leftPaneRef.current.clientHeight / 3);
+        leftPaneRef.current.scrollTo({ top: target, behavior: 'smooth' });
+      }
+      if (rightPaneRef.current) {
+        const target = Math.max(0, rLine * lineHeight - rightPaneRef.current.clientHeight / 3);
+        rightPaneRef.current.scrollTo({ top: target, behavior: 'smooth' });
+      }
     });
-  }, [chunks, rows, lineHeight]);
+  }, [hunks, lineHeight]);
 
   const goPrevDiff = useCallback(() => {
-    if (chunks.length === 0) return;
-    const next = currentChunkIdx <= 0 ? chunks.length - 1 : currentChunkIdx - 1;
-    setCurrentChunkIdx(next);
-    scrollToChunk(next);
-  }, [chunks.length, currentChunkIdx, scrollToChunk]);
+    if (hunks.length === 0) return;
+    const next = currentHunkIdx <= 0 ? hunks.length - 1 : currentHunkIdx - 1;
+    setCurrentHunkIdx(next);
+    scrollToHunk(next);
+  }, [hunks.length, currentHunkIdx, scrollToHunk]);
 
   const goNextDiff = useCallback(() => {
-    if (chunks.length === 0) return;
-    const next = currentChunkIdx >= chunks.length - 1 ? 0 : currentChunkIdx + 1;
-    setCurrentChunkIdx(next);
-    scrollToChunk(next);
-  }, [chunks.length, currentChunkIdx, scrollToChunk]);
+    if (hunks.length === 0) return;
+    const next = currentHunkIdx >= hunks.length - 1 ? 0 : currentHunkIdx + 1;
+    setCurrentHunkIdx(next);
+    scrollToHunk(next);
+  }, [hunks.length, currentHunkIdx, scrollToHunk]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -377,7 +615,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         else onClose();
         return;
       }
-      // F7 / Shift+F7 — IDEA-style next/prev diff
       if (e.key === 'F7') {
         e.preventDefault();
         if (e.shiftKey) goPrevDiff(); else goNextDiff();
@@ -389,15 +626,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const stats = useMemo(() => {
     let removed = 0, added = 0, modified = 0;
-    for (const r of rows) {
-      if (r.kind === 'remove') removed++;
-      else if (r.kind === 'add') added++;
-      else if (r.kind === 'modify') modified++;
+    for (const h of hunks) {
+      if (h.kind === 'remove') removed += (h.leftLast - h.leftFirst + 1);
+      else if (h.kind === 'add') added += (h.rightLast - h.rightFirst + 1);
+      else {
+        modified += Math.max(
+          h.leftLast - h.leftFirst + 1,
+          h.rightLast - h.rightFirst + 1
+        );
+      }
     }
     return { removed, added, modified };
-  }, [rows]);
+  }, [hunks]);
 
-  const colors = theme === 'dark' ? {
+  const colors: DiffColors = theme === 'dark' ? {
     bg: '#0b0d14',
     panelBg: '#0f111a',
     headerBg: '#0d0f14',
@@ -408,14 +650,18 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     textDim: '#64748b',
     gutterBg: '#0a0c12',
     gutterText: '#475569',
-    removeBg: 'rgba(239, 68, 68, 0.12)',
-    removeGutter: 'rgba(239, 68, 68, 0.22)',
-    removeInline: 'rgba(239, 68, 68, 0.4)',
-    addBg: 'rgba(34, 197, 94, 0.12)',
-    addGutter: 'rgba(34, 197, 94, 0.22)',
-    addInline: 'rgba(34, 197, 94, 0.42)',
-    modifyBg: 'rgba(234, 179, 8, 0.10)',
-    modifyGutter: 'rgba(234, 179, 8, 0.22)',
+    removeBg: 'rgba(239, 68, 68, 0.16)',
+    removeGutter: 'rgba(239, 68, 68, 0.24)',
+    removeStrong: '#ef4444',
+    removeRibbon: 'rgba(239, 68, 68, 0.18)',
+    addBg: 'rgba(34, 197, 94, 0.16)',
+    addGutter: 'rgba(34, 197, 94, 0.24)',
+    addStrong: '#22c55e',
+    addRibbon: 'rgba(34, 197, 94, 0.18)',
+    modifyBg: 'rgba(234, 179, 8, 0.14)',
+    modifyGutter: 'rgba(234, 179, 8, 0.24)',
+    modifyStrong: '#eab308',
+    modifyRibbon: 'rgba(234, 179, 8, 0.16)',
     accent: '#60a5fa',
     pickerBg: 'rgba(15, 17, 26, 0.96)',
     pickerItemHover: 'rgba(59, 130, 246, 0.15)'
@@ -430,53 +676,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     textDim: '#94a3b8',
     gutterBg: '#f1f5f9',
     gutterText: '#94a3b8',
-    removeBg: 'rgba(239, 68, 68, 0.10)',
-    removeGutter: 'rgba(239, 68, 68, 0.20)',
-    removeInline: 'rgba(239, 68, 68, 0.35)',
-    addBg: 'rgba(34, 197, 94, 0.12)',
-    addGutter: 'rgba(34, 197, 94, 0.22)',
-    addInline: 'rgba(34, 197, 94, 0.38)',
-    modifyBg: 'rgba(234, 179, 8, 0.12)',
-    modifyGutter: 'rgba(234, 179, 8, 0.25)',
+    removeBg: 'rgba(239, 68, 68, 0.14)',
+    removeGutter: 'rgba(239, 68, 68, 0.24)',
+    removeStrong: '#dc2626',
+    removeRibbon: 'rgba(239, 68, 68, 0.18)',
+    addBg: 'rgba(34, 197, 94, 0.16)',
+    addGutter: 'rgba(34, 197, 94, 0.26)',
+    addStrong: '#16a34a',
+    addRibbon: 'rgba(34, 197, 94, 0.20)',
+    modifyBg: 'rgba(234, 179, 8, 0.16)',
+    modifyGutter: 'rgba(234, 179, 8, 0.28)',
+    modifyStrong: '#a8821a',
+    modifyRibbon: 'rgba(234, 179, 8, 0.18)',
     accent: '#2563eb',
     pickerBg: 'rgba(255, 255, 255, 0.98)',
     pickerItemHover: 'rgba(59, 130, 246, 0.10)'
   };
 
-  const rowBgFor = (kind: Row['kind'], side: Side) => {
-    if (kind === 'equal') return 'transparent';
-    if (kind === 'modify') return colors.modifyBg;
-    if (kind === 'remove') return side === 'left' ? colors.removeBg : 'transparent';
-    if (kind === 'add') return side === 'right' ? colors.addBg : 'transparent';
-    return 'transparent';
-  };
-
-  const centerGutterBgFor = (kind: Row['kind']) => {
-    if (kind === 'equal') return colors.gutterBg;
-    if (kind === 'modify') return colors.modifyGutter;
-    if (kind === 'remove') return colors.removeGutter;
-    if (kind === 'add') return colors.addGutter;
-    return colors.gutterBg;
-  };
-
-  const markerColorFor = (kind: Row['kind']) => {
-    if (kind === 'remove') return '#ef4444';
-    if (kind === 'add') return '#22c55e';
-    if (kind === 'modify') return '#eab308';
-    return colors.gutterText;
-  };
-
-  const markerFor = (kind: Row['kind']) => {
-    if (kind === 'remove') return '−';
-    if (kind === 'add') return '+';
-    if (kind === 'modify') return '~';
-    return '';
-  };
-
-  const numCol = 46;
-  const markerCol = 18;
-  const centerGutterWidth = numCol * 2 + markerCol;
-  const gutterFontSize = Math.max(10, fontSize - 2);
+  const ribbonWidth = 38;
 
   const candidates = notes;
   const filteredCandidates = useMemo(() => {
@@ -531,79 +748,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
   };
 
-  const renderGutterRows = () => {
-    rowRefs.current = [];
-    if (rows.length === 0) {
-      return (
-        <div style={{
-          paddingTop: 40, textAlign: 'center', color: colors.textDim,
-          fontSize: 11, fontWeight: 700
-        }}>
-          NO DIFF
-        </div>
-      );
-    }
-    return rows.map((r, idx) => {
-      const isCurrentChunkStart =
-        currentChunkIdx >= 0 &&
-        currentChunkIdx < chunks.length &&
-        chunks[currentChunkIdx].start === idx;
-
-      const isEqual = r.kind === 'equal';
-      const dim = isEqual && dimUnchanged ? 0.45 : 1;
-
-      return (
-        <div
-          key={idx}
-          ref={el => { rowRefs.current[idx] = el; }}
-          style={{
-            display: 'flex', alignItems: 'stretch',
-            minHeight: lineHeight, width: centerGutterWidth,
-            position: 'relative',
-            opacity: dim,
-            background: centerGutterBgFor(r.kind),
-            borderLeft: `1px solid ${colors.border}`,
-            borderRight: `1px solid ${colors.border}`,
-            userSelect: 'none',
-            fontVariantNumeric: 'tabular-nums'
-          }}
-        >
-          {isCurrentChunkStart && (
-            <div style={{
-              position: 'absolute', left: 0, right: 0, top: 0,
-              height: 2, background: colors.accent, zIndex: 2,
-              boxShadow: `0 0 8px ${colors.accent}`,
-              opacity: 1
-            }} />
-          )}
-          <div style={{
-            width: numCol, padding: '0 8px', textAlign: 'right',
-            color: r.kind === 'remove' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'remove') : colors.gutterText,
-            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-            fontWeight: r.kind !== 'equal' ? 700 : 500
-          }}>{r.leftNum ?? ''}</div>
-          <div style={{
-            width: markerCol, textAlign: 'center',
-            color: markerColorFor(r.kind),
-            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-            fontWeight: 800
-          }}>{markerFor(r.kind)}</div>
-          <div style={{
-            width: numCol, padding: '0 8px', textAlign: 'left',
-            color: r.kind === 'add' || r.kind === 'modify' ? markerColorFor(r.kind === 'modify' ? 'modify' : 'add') : colors.gutterText,
-            fontSize: gutterFontSize, lineHeight: `${lineHeight}px`,
-            fontWeight: r.kind !== 'equal' ? 700 : 500
-          }}>{r.rightNum ?? ''}</div>
-        </div>
-      );
-    });
-  };
-
   const fileChip = (side: Side) => {
     const src = side === 'left' ? leftSrc : rightSrc;
     const title = side === 'left' ? leftTitle : rightTitle;
     const isNote = src.kind === 'note';
-    const dot = side === 'left' ? '#ef4444' : '#22c55e';
+    const dot = side === 'left' ? colors.removeStrong : colors.addStrong;
     return (
       <button
         className="dv-file-chip"
@@ -671,11 +820,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         {err && (
           <span style={{
             marginLeft: 'auto', fontSize: 11, fontWeight: 700,
-            color: '#ef4444', display: 'inline-flex', alignItems: 'center', gap: 5,
+            color: colors.removeStrong, display: 'inline-flex', alignItems: 'center', gap: 5,
             padding: '3px 8px', borderRadius: 6,
             background: 'rgba(239, 68, 68, 0.12)'
           }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="#ef4444" stroke="none">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill={colors.removeStrong} stroke="none">
               <circle cx="12" cy="12" r="10"></circle>
               <line x1="12" y1="8" x2="12" y2="12" stroke="white" strokeWidth="2" strokeLinecap="round"></line>
               <line x1="12" y1="16" x2="12.01" y2="16" stroke="white" strokeWidth="2" strokeLinecap="round"></line>
@@ -693,22 +842,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     );
   };
 
-  const syncScroll = useCallback((from: Side | 'gutter', scrollTop: number) => {
-    if (syncingScrollRef.current && syncingScrollRef.current !== from) return;
-    syncingScrollRef.current = from;
-    const targets = [
-      { key: 'left' as const, ref: leftPaneRef },
-      { key: 'right' as const, ref: rightPaneRef },
-      { key: 'gutter' as const, ref: gutterRef },
-    ];
-    targets.forEach(({ key, ref }) => {
-      if (key === from || !ref.current) return;
-      if (Math.abs(ref.current.scrollTop - scrollTop) > 1) {
-        ref.current.scrollTop = scrollTop;
-      }
-    });
-    requestAnimationFrame(() => { syncingScrollRef.current = null; });
-  }, []);
+  void leftLineCount; void rightLineCount;
 
   return (
     <div style={{
@@ -790,13 +924,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.08)' : 'rgba(59, 130, 246, 0.05)'};
         }
         .dv-mini-btn.danger:hover {
-          color: #ef4444; border-color: #ef4444;
+          color: ${colors.removeStrong}; border-color: ${colors.removeStrong};
           background: rgba(239, 68, 68, 0.08);
         }
         .dv-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
         .dv-scroll::-webkit-scrollbar-track { background: transparent; }
         .dv-scroll::-webkit-scrollbar-thumb { background: ${theme === 'dark' ? '#334155' : '#cbd5e1'}; border-radius: 10px; border: 2px solid ${colors.bg}; }
         .dv-scroll::-webkit-scrollbar-thumb:hover { background: ${theme === 'dark' ? '#475569' : '#94a3b8'}; }
+        .dv-no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+        .dv-no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
         .dv-picker-overlay {
           position: absolute; inset: 0; background: rgba(0,0,0,0.4);
           display: flex; align-items: flex-start; justify-content: center; z-index: 50;
@@ -828,20 +964,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         .dv-picker-item:hover { background: ${colors.pickerItemHover}; }
         .dv-picker-item-title { font-size: 12px; font-weight: 700; color: ${colors.text}; display: flex; align-items: center; gap: 6px; }
         .dv-picker-item-meta { font-size: 10px; color: ${colors.textDim}; font-weight: 600; }
-        .dv-edit-area {
-          width: 100%; flex: 1; resize: none; outline: none;
-          border: none; padding: 14px 16px;
-          background: ${colors.panelBg}; color: ${colors.text};
-          font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-          font-size: ${fontSize}px; line-height: ${lineHeight}px;
-          tab-size: 2;
-        }
-        .dv-tab {
-          height: 24px; padding: 0 10px; font-size: 11px; font-weight: 700;
-          border: none; border-radius: 6px; cursor: pointer;
-          display: inline-flex; align-items: center; gap: 5px;
-          transition: all 0.15s;
-        }
         .dv-toggle-btn {
           height: 28px; padding: 0 10px; border-radius: 7px;
           border: 1px solid ${colors.border};
@@ -857,30 +979,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         .dv-toggle-btn.active {
           color: ${colors.accent}; border-color: ${colors.accent};
           background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.14)' : 'rgba(59, 130, 246, 0.08)'};
-        }
-        .dv-fold-bar {
-          display: flex; align-items: center; gap: 8px;
-          padding: 6px 14px; cursor: pointer;
-          border-top: 1px dashed ${colors.border};
-          border-bottom: 1px dashed ${colors.border};
-          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.04)' : 'rgba(59, 130, 246, 0.03)'};
-          color: ${colors.textSec};
-          font-size: 11px; font-weight: 700;
-          transition: background 0.15s;
-          user-select: none;
-        }
-        .dv-fold-bar:hover {
-          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.12)' : 'rgba(59, 130, 246, 0.08)'};
-          color: ${colors.accent};
-        }
-        .dv-fold-text {
-          letter-spacing: 0.02em;
-        }
-        .dv-fold-hint {
-          margin-left: auto;
-          font-size: 10px; font-weight: 600;
-          color: ${colors.textDim};
-          letter-spacing: 0.04em; text-transform: uppercase;
         }
       `}</style>
 
@@ -921,7 +1019,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* Dim unchanged toggle */}
           <button
             className={`dv-toggle-btn ${dimUnchanged ? 'active' : ''}`}
             onClick={() => setDimUnchanged(d => !d)}
@@ -937,7 +1034,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             {dimUnchanged ? 'Focus diffs' : 'Show all'}
           </button>
 
-          {/* Diff navigation */}
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: 3, borderRadius: 8,
@@ -946,7 +1042,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <button
               className="dv-nav-btn"
               onClick={goPrevDiff}
-              disabled={chunks.length === 0}
+              disabled={hunks.length === 0}
               title="Previous difference (Shift+F7)"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -954,12 +1050,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               </svg>
             </button>
             <span className="dv-nav-counter">
-              {chunks.length === 0 ? '0 / 0' : `${currentChunkIdx + 1} / ${chunks.length}`}
+              {hunks.length === 0 ? '0 / 0' : `${currentHunkIdx + 1} / ${hunks.length}`}
             </span>
             <button
               className="dv-nav-btn"
               onClick={goNextDiff}
-              disabled={chunks.length === 0}
+              disabled={hunks.length === 0}
               title="Next difference (F7)"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -969,13 +1065,13 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span className="dv-chip" style={{ background: colors.removeBg, color: '#ef4444' }}>
+            <span className="dv-chip" style={{ background: colors.removeBg, color: colors.removeStrong }}>
               −{stats.removed}
             </span>
-            <span className="dv-chip" style={{ background: colors.modifyBg, color: '#eab308' }}>
+            <span className="dv-chip" style={{ background: colors.modifyBg, color: colors.modifyStrong }}>
               ~{stats.modified}
             </span>
-            <span className="dv-chip" style={{ background: colors.addBg, color: '#22c55e' }}>
+            <span className="dv-chip" style={{ background: colors.addBg, color: colors.addStrong }}>
               +{stats.added}
             </span>
           </div>
@@ -992,60 +1088,63 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       </div>
 
       {/* Body */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
-        <LivePane
+      <div ref={bodyRef} style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+        <EditablePane
           side="left"
           text={leftText}
           onChange={setLeftText}
-          lineKinds={leftLineKinds}
-          paneRef={leftPaneRef}
-          onScrollSync={syncScroll}
+          hunks={hunks}
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
-          rowBgFor={rowBgFor}
+          paneRef={leftPaneRef}
+          onScroll={handleScroll}
+          currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('left')}
+          dim={dimUnchanged}
+          bottomPadding={leftBottomPad}
         />
 
+        {/* Connector ribbon column */}
         <div style={{
-          width: centerGutterWidth, flexShrink: 0,
+          width: ribbonWidth, flexShrink: 0,
           display: 'flex', flexDirection: 'column',
-          background: colors.gutterBg
+          background: colors.gutterBg,
+          position: 'relative'
         }}>
           <div style={{
             height: 36, flexShrink: 0,
-            background: colors.gutterBg,
-            borderLeft: `1px solid ${colors.border}`,
-            borderRight: `1px solid ${colors.border}`,
-            borderBottom: `1px solid ${colors.border}`
+            background: colors.gutterBg
           }} />
-          <div
-            ref={gutterRef}
-            onScroll={e => syncScroll('gutter', e.currentTarget.scrollTop)}
-            className="dv-scroll"
-            style={{
-              flex: 1, overflow: 'hidden',
-              background: colors.gutterBg
-            }}
-          >
-            <div style={{ minHeight: '100%', height: Math.max(rows.length * lineHeight + 40, 0) }}>
-              {renderGutterRows()}
-            </div>
+          <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+            <ConnectorRibbon
+              width={ribbonWidth}
+              height={ribbonHeight}
+              hunks={hunks}
+              currentHunkIdx={currentHunkIdx}
+              lineHeight={lineHeight}
+              leftScrollTop={leftScrollTop}
+              rightScrollTop={rightScrollTop}
+              colors={colors}
+              onHunkClick={idx => { setCurrentHunkIdx(idx); scrollToHunk(idx); }}
+            />
           </div>
         </div>
 
-        <LivePane
+        <EditablePane
           side="right"
           text={rightText}
           onChange={setRightText}
-          lineKinds={rightLineKinds}
-          paneRef={rightPaneRef}
-          onScrollSync={syncScroll}
+          hunks={hunks}
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
-          rowBgFor={rowBgFor}
+          paneRef={rightPaneRef}
+          onScroll={handleScroll}
+          currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('right')}
+          dim={dimUnchanged}
+          bottomPadding={rightBottomPad}
           autoFocus
         />
 
