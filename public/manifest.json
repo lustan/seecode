@@ -1,8 +1,8 @@
 {
   "name": "Seecode",
-  "version": "3.0.1",
+  "version": "4.0.0",
   "manifest_version": 3,
-  "description": "A robust code editor extension with multi-language support, intelligent layout, and specialized JSON formatting.",
+  "description": "A robust code editor extension with multi-language support, intelligent layout, specialized JSON formatting, and IDEA-style file/note comparison.",
   "permissions": ["storage"],
   "action": {
     "default_popup": "popup.html",
