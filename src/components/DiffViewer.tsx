@@ -254,6 +254,29 @@ function EditablePane(props: {
           display: 'flex',
           flexDirection: side === 'left' ? 'row-reverse' : 'row'
         }}>
+          {/* Collapse markers — a thin colored line at the y-position where
+              the OPPOSITE side has a block that this side doesn't. Rendered
+              at the pane level (not inside the text-area column) so it spans
+              BOTH the line-number gutter and the text area, visually fusing
+              with the SVG ribbon in the middle strip. */}
+          <div style={{
+            position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2
+          }}>
+            {collapseMarkers.map((m, i) => (
+              <div
+                key={`cm-${i}`}
+                style={{
+                  position: 'absolute',
+                  top: m.y - 1,
+                  left: 0, right: 0,
+                  height: 2,
+                  background: m.color,
+                  opacity: 0.85
+                }}
+              />
+            ))}
+          </div>
+
           {/* Line number column — sits on the INNER side of each pane so the
               two number columns end up next to the center ribbon. */}
           <div style={{
@@ -307,21 +330,6 @@ function EditablePane(props: {
                   />
                 );
               })}
-              {/* Collapse markers — a thin colored line at the y-position where
-                  the OPPOSITE side has a block that this side doesn't. */}
-              {collapseMarkers.map((m, i) => (
-                <div
-                  key={`cm-${i}`}
-                  style={{
-                    position: 'absolute',
-                    top: m.y - 1,
-                    left: 0, right: 0,
-                    height: 2,
-                    background: m.color,
-                    opacity: 0.85
-                  }}
-                />
-              ))}
             </div>
             <textarea
               ref={textareaRef}

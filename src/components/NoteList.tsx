@@ -208,10 +208,9 @@ export default function NoteList({
     const sidebar = sidebarRef.current;
     if (!el || !sidebar) return;
     const rowRect = el.getBoundingClientRect();
-    const sidebarRect = sidebar.getBoundingClientRect();
     setNoteActionsPos({
-      // Anchor right after the sidebar's right edge so the group floats over the editor.
-      left: sidebarRect.right + 4,
+      // Hug the right edge of the file-name row; allowed to overlap the scrollbar.
+      left: rowRect.right - 4,
       top: rowRect.top + rowRect.height / 2
     });
   };
@@ -222,9 +221,8 @@ export default function NoteList({
     const sidebar = sidebarRef.current;
     if (!el || !sidebar) return;
     const rowRect = el.getBoundingClientRect();
-    const sidebarRect = sidebar.getBoundingClientRect();
     setFolderActionsPos({
-      left: sidebarRect.right + 4,
+      left: rowRect.right - 4,
       top: rowRect.top + rowRect.height / 2
     });
   };
@@ -388,7 +386,7 @@ export default function NoteList({
   const handleCreateFile = (type: typeof FILE_TYPES[number]) => {
     const sameLangCount = notes.filter(n => (n.language || 'plaintext') === type.language).length;
     const baseLabel = type.label;
-    const title = `${baseLabel} ${sameLangCount + 1}${type.ext}`;
+    const title = `${baseLabel} ${sameLangCount + 1}`;
     onAdd({ language: type.language, title });
     setShowAddMenu(false);
   };

@@ -1,22 +1,14 @@
-﻿<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="plexA" x1="20" y1="16" x2="104" y2="112" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#00E5FF" />
-      <stop offset="1" stop-color="#2563FF" />
-    </linearGradient>
-    <linearGradient id="plexB" x1="100" y1="20" x2="28" y2="108" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FF3ED1" />
-      <stop offset="1" stop-color="#7A3CFF" />
-    </linearGradient>
-  </defs>
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Blue crescent "C" — outer arc minus inner arc → tapered tips like a moon -->
+  <path d="M 91 18 A 54 54 0 1 0 91 110 A 49 49 0 1 1 91 18 Z"
+        fill="#1F73E0" />
 
-  <!-- Left bracket -->
-  <path d="M44 20H30C24.477 20 20 24.477 20 30V98C20 103.523 24.477 108 30 108H44"
-        stroke="url(#plexA)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" />
+  <!-- Green plus — centered at x=80, shifted down -->
+  <line x1="59" y1="50" x2="101" y2="50"
+        stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
+  <line x1="80" y1="29" x2="80" y2="71"
+        stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
 
-  <!-- Forward slash -->
-  <path d="M78 20L54 108" stroke="url(#plexB)" stroke-width="12" stroke-linecap="round" />
-
-  <!-- Cursor block -->
-  <rect x="86" y="74" width="22" height="28" rx="6" fill="url(#plexA)" />
+  <!-- Red minus — centered at x=80, shifted down -->
+  <rect x="55" y="92" width="50" height="7" rx="3" fill="#E23B3B" />
 </svg>
