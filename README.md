@@ -66,7 +66,6 @@ Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetB
 > Add your extension screenshots here to showcase the UI.
 
 ### Main Editor View
-<img width="753" height="750" alt="image" src="https://github.com/user-attachments/assets/7bac4be5-3ef1-4f7c-b8f2-9ed7264c51a5" />
 
 <img width="1903" height="877" alt="image" src="https://github.com/user-attachments/assets/8f393a16-3a23-4310-bbba-6bbd92b67a72" />
 
