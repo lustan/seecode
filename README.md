@@ -1,9 +1,9 @@
 
 # Seecode 🚀
 
-> **v4.0.0** — Code editor & file diff Chrome extension, JetBrains IDEA inspired.
+> **v4.0.0** — Code editor & file diff Chrome extension.
 
-Seecode is a high-performance, feature-rich Chrome extension designed for developers who need a reliable, JetBrains IDEA-inspired environment for quick code snippets, JSON formatting, multi-language note-taking, and **side-by-side file/note comparison**.
+Seecode is a high-performance, feature-rich Chrome extension designed for developers who need a reliable, JSON formatting, multi-language note-taking, and **side-by-side file/note comparison**.
 
 ![Logo](public/icon.svg)
 
@@ -20,7 +20,6 @@ Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetB
   * 🟥 **Red** — lines removed from the left
   * 🟩 **Green** — lines added on the right
   * 🟨 **Yellow** — lines modified
-* **🌉 Animated connector ribbon** — a smooth SVG bezier ribbon between the two panes visually links each hunk on the left to its counterpart on the right, just like in IDEA.
 * **📏 Anchored scroll sync** — scrolling either pane keeps the corresponding hunk aligned on the other side via piecewise-linear line mapping, with snap-to-edge behavior at the top/bottom.
 * **🧭 Hunk navigation**
   * `F7` — jump to the **next** difference
@@ -31,7 +30,6 @@ Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetB
 * **📂 File picker** — search through all your notes by title or content and load either side from the spotlight-style picker (`Esc` to dismiss).
 * **🧹 Per-side toolbar** — `Format JSON`, `Copy`, and `Clear` actions on each pane independently, with inline error feedback when JSON is invalid.
 * **🌓 Theme-aware** — full dark & light palettes matching the rest of the editor.
-* **📐 IDEA-faithful layout** — natural per-side heights (no fake padding-to-equalize), tabular-numeric gutters, and collapse markers showing where a missing block lives on the empty side.
 
 > Open the diff viewer from the editor toolbar to compare the current note against any other note — or against a fresh blank scratch buffer.
 
@@ -39,16 +37,11 @@ Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetB
 
 ## ✨ Key Features
 
-### 🖥️ JetBrains IDEA Inspired UI
-* **Visual Fidelity**: A professional dark environment that mimics the look and feel of your favorite IDE.
-* **Smart Diagnostics**: Built-in JSON linter with IDEA-style wavy red underlines and gutter indicators.
-
 ### 🔍 File Compare *(new in 4.0)*
 * **Two-pane diff viewer** with LCS line diff, SVG connector ribbon, and scroll sync.
 * **Editable on both sides** — diff updates live as you type.
 * **Hunk navigation** with `F7` / `Shift+F7` and click-to-jump on the ribbon.
 * **Format / Copy / Clear** per side; **Swap sides** with one click.
-* See [What's New](#-whats-new-in-v400) above for the full breakdown.
 
 ### 📝 Intelligent Note Management
 * **Multi-Language Support**: Seamlessly switch between JSON, JavaScript, Java, Python, SQL, and Markdown.
@@ -73,7 +66,11 @@ Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetB
 > Add your extension screenshots here to showcase the UI.
 
 ### Main Editor View
-<img width="902" height="911" alt="image" src="https://github.com/user-attachments/assets/9eceb410-c8f7-48eb-9c5c-3592014ba641" />
+
+<img width="1903" height="877" alt="image" src="https://github.com/user-attachments/assets/8f393a16-3a23-4310-bbba-6bbd92b67a72" />
+
+<img width="1903" height="865" alt="image" src="https://github.com/user-attachments/assets/56eb023f-7b71-4cda-96cd-7ae78da53ad5" />
+
 
 ### File Compare View *(new in 4.0)*
 > Add a screenshot of the diff viewer here — two panes, ribbon, and the `−/~/+` stats chips in the header.
