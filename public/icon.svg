@@ -1,14 +1,24 @@
 <svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Blue crescent "C" — outer arc minus inner arc → tapered tips like a moon -->
-  <path d="M 91 18 A 54 54 0 1 0 91 110 A 49 49 0 1 1 91 18 Z"
-        fill="#1F73E0" />
+  <!--
+    Content bbox after edits:
+      crescent x: ~8.7 .. 91, y: 18 .. 110
+      plus     x: 69 .. 111, y: 29 .. 71
+      minus    x: 65 .. 115, y: 92 .. 99
+    overall:   x: ~8.7 .. 115 (cx ≈ 61.85, w ≈ 106.3), y: 18 .. 110 (cy = 64, h = 92)
+    Scale to fill (width-limited): 128/106.3 ≈ 1.20 — leave a touch of padding at 1.18.
+  -->
+  <g transform="translate(64 64) scale(1.18) translate(-61.85 -64)">
+    <!-- Blue crescent "C" — thicker middle (inner radius reduced from 49 to 48) -->
+    <path d="M 91 18 A 54 54 0 1 0 91 110 A 48 48 0 1 1 91 18 Z"
+          fill="#1F73E0" />
 
-  <!-- Green plus — centered at x=80, shifted down -->
-  <line x1="59" y1="50" x2="101" y2="50"
-        stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
-  <line x1="80" y1="29" x2="80" y2="71"
-        stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
+    <!-- Green plus — shifted right (center x: 80 → 90) -->
+    <line x1="69" y1="50" x2="111" y2="50"
+          stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
+    <line x1="90" y1="29" x2="90" y2="71"
+          stroke="#2BB14A" stroke-width="6" stroke-linecap="round" />
 
-  <!-- Red minus — centered at x=80, shifted down -->
-  <rect x="55" y="92" width="50" height="7" rx="3" fill="#E23B3B" />
+    <!-- Red minus — shifted right (center x: 80 → 90) -->
+    <rect x="65" y="92" width="50" height="7" rx="3" fill="#E23B3B" />
+  </g>
 </svg>
