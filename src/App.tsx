@@ -473,6 +473,8 @@ export default function App({ isPopup = false }) {
               onLanguageChange={(lang) => setNoteLanguage(activeId!, lang)}
               allNotes={notes}
               activeNoteId={activeId}
+              onSaveNote={(noteId, content) =>
+                setNotes(prev => prev.map(n => n.id === noteId ? { ...n, content } : n))}
               showAlert={showAlert}
             />
           ) : (

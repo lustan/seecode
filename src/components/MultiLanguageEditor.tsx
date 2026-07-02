@@ -95,10 +95,11 @@ interface Props {
   autoDetectLanguage?: boolean;
   allNotes?: Note[];
   activeNoteId?: string | null;
+  onSaveNote?: (noteId: string, content: string) => void;
   showAlert?: (o: any) => void;
 }
 
-export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, showAlert }: Props) {
+export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, onSaveNote, showAlert }: Props) {
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
   const [showDiff, setShowDiff] = useState(false);
@@ -840,6 +841,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
           currentNote={allNotes?.find(n => n.id === activeNoteId) || null}
           theme={theme}
           fontSize={fontSize}
+          onSaveNote={onSaveNote}
           onClose={() => setShowDiff(false)}
         />
       )}

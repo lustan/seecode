@@ -7,6 +7,8 @@ interface Props {
   currentNote?: Note | null;
   theme?: 'dark' | 'light';
   fontSize?: number;
+  /** Persist an edited side back to the note it was loaded from. */
+  onSaveNote?: (noteId: string, content: string) => void;
   onClose: () => void;
 }
 
@@ -503,7 +505,7 @@ function ConnectorRibbon(props: {
   );
 }
 
-export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onClose }: Props) {
+export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onSaveNote, onClose }: Props) {
   // Layout constants used by scroll math and the panes.
   const lineHeight = Math.round(fontSize * 1.55);
 
@@ -814,6 +816,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     setPickerSearch('');
   };
 
+  // Persist edits back to the note a side was loaded from. Blank (scratch)
+  // sides have no backing note, so their edits stay local to the diff view.
+  const handleTextChange = (side: Side, value: string) => {
+    const src = side === 'left' ? leftSrc : rightSrc;
+    if (side === 'left') setLeftText(value);
+    else setRightText(value);
+    if (src.kind === 'note') onSaveNote?.(src.noteId, value);
+  };
+
   const swapSides = () => {
     const ls = leftSrc, lt = leftText;
     setLeftSrc(rightSrc); setLeftText(rightText);
@@ -828,8 +839,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
     try {
       const formatted = JSON.stringify(JSON.parse(text), null, 2);
-      if (side === 'left') setLeftText(formatted);
-      else setRightText(formatted);
+      handleTextChange(side, formatted);
       setFormatError(null);
     } catch (e: any) {
       setFormatError({ side, message: 'Invalid JSON' });
@@ -837,6 +847,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   };
 
   const clearSide = (side: Side) => {
+    // Detach into a blank scratch buffer. Does NOT wipe the backing note —
+    // to edit a note's content, type in the pane instead.
     if (side === 'left') {
       setLeftText('');
       setLeftSrc({ kind: 'blank' });
@@ -1173,7 +1185,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         <EditablePane
           side="left"
           text={leftText}
-          onChange={setLeftText}
+          onChange={v => handleTextChange('left', v)}
           hunks={hunks}
           lineHeight={lineHeight}
           fontSize={fontSize}
@@ -1215,7 +1227,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         <EditablePane
           side="right"
           text={rightText}
-          onChange={setRightText}
+          onChange={v => handleTextChange('right', v)}
           hunks={hunks}
           lineHeight={lineHeight}
           fontSize={fontSize}
