@@ -21,6 +21,42 @@ type RowKind = 'equal' | 'remove' | 'add' | 'modify';
 
 type Side = 'left' | 'right';
 
+// One search hit, addressed by 0-based line + column range within that line.
+type Match = { line: number; start: number; end: number };
+
+// Per-side find state. `open` toggles the floating find bar; `currentIdx`
+// is the index into the matches array (or -1 when there are none).
+type SearchState = {
+  open: boolean;
+  query: string;
+  caseSensitive: boolean;
+  currentIdx: number;
+};
+
+const EMPTY_SEARCH: SearchState = { open: false, query: '', caseSensitive: false, currentIdx: -1 };
+
+// Find every occurrence of `query` in `text`, returned per-line so the
+// highlight overlay can position each rect. Plain substring search (not regex)
+// to stay predictable; non-overlapping matches.
+function findMatches(text: string, query: string, caseSensitive: boolean): Match[] {
+  if (!query) return [];
+  const out: Match[] = [];
+  const needle = caseSensitive ? query : query.toLowerCase();
+  const lines = text.split('\n');
+  for (let line = 0; line < lines.length; line++) {
+    const raw = lines[line];
+    const hay = caseSensitive ? raw : raw.toLowerCase();
+    let from = 0;
+    while (from <= hay.length) {
+      const idx = hay.indexOf(needle, from);
+      if (idx < 0) break;
+      out.push({ line, start: idx, end: idx + query.length });
+      from = idx + query.length; // non-overlapping
+    }
+  }
+  return out;
+}
+
 type PaneSource =
   | { kind: 'note'; noteId: string }
   | { kind: 'blank' };
@@ -133,6 +169,9 @@ type DiffColors = {
   accent: string;
   pickerBg: string;
   pickerItemHover: string;
+  searchMatch: string;
+  searchCurrent: string;
+  searchCurrentBorder: string;
 };
 
 // =============================================================================
@@ -154,6 +193,12 @@ function EditablePane(props: {
   currentHunkIdx: number;
   toolbar: React.ReactNode;
   autoFocus?: boolean;
+  /** Search matches on THIS side, and the index of the active one (-1 = none). */
+  matches: Match[];
+  currentMatchIdx: number;
+  onFocusPane?: () => void;
+  /** Floating find bar for this side (or null when closed). */
+  findBar?: React.ReactNode;
   /** Extra space appended below the document so both panes have matching
    *  total scroll heights — keeps scroll-sync aligned at the bottom. */
   bottomPadding: number;
@@ -161,7 +206,8 @@ function EditablePane(props: {
   const {
     side, text, onChange, hunks,
     lineHeight, fontSize, colors, paneRef, textareaRef, onScroll,
-    currentHunkIdx, toolbar, autoFocus, bottomPadding
+    currentHunkIdx, toolbar, autoFocus, bottomPadding,
+    matches, currentMatchIdx, onFocusPane, findBar
   } = props;
 
   const numColWidth = 50;
@@ -211,6 +257,29 @@ function EditablePane(props: {
     return Math.ceil(max) + textPadding + 2;
   }, [text, fontSize]);
   const colWidth = Math.max(textContentWidth, Math.max(0, availWidth - numColWidth));
+
+  // Pixel rects for each search match, positioned with the same canvas metrics
+  // used for column width so CJK/wide glyphs and tabs land correctly. x is the
+  // width of the text before the match; width is the matched substring's width.
+  const matchRects = useMemo(() => {
+    if (matches.length === 0 || typeof document === 'undefined') return [];
+    const canvas = measureCanvasRef.current || document.createElement('canvas');
+    measureCanvasRef.current = canvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return [];
+    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    const tab = '  ';
+    const lines = text.split('\n');
+    const expand = (s: string) => (s.indexOf('\t') >= 0 ? s.replace(/\t/g, tab) : s);
+    return matches.map((m, i) => {
+      const raw = lines[m.line] ?? '';
+      const before = expand(raw.slice(0, m.start));
+      const inner = expand(raw.slice(m.start, m.end));
+      const x = 12 + ctx.measureText(before).width; // 12 = textarea left padding
+      const w = Math.max(1, ctx.measureText(inner).width);
+      return { x, w, top: m.line * lineHeight, current: i === currentMatchIdx };
+    });
+  }, [matches, currentMatchIdx, text, fontSize, lineHeight]);
 
   // Per-line kind, indexed by 0-based line in THIS side.
   const lineKinds = useMemo<RowKind[]>(() => {
@@ -279,9 +348,10 @@ function EditablePane(props: {
   return (
     <div style={{
       flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
-      background: colors.panelBg
+      background: colors.panelBg, position: 'relative'
     }}>
       {toolbar}
+      {findBar}
       <div
         ref={paneRef}
         onScroll={e => onScroll(e.currentTarget.scrollTop, e.currentTarget.scrollLeft, side)}
@@ -380,11 +450,33 @@ function EditablePane(props: {
                 );
               })}
             </div>
+            {/* Search-match highlight overlay — sits above the color bands but
+                below the (transparent) textarea, so the text stays readable. */}
+            {matchRects.length > 0 && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1 }}>
+                {matchRects.map((r, i) => (
+                  <div
+                    key={`sm-${i}`}
+                    style={{
+                      position: 'absolute',
+                      top: r.top,
+                      left: r.x,
+                      width: r.w,
+                      height: lineHeight,
+                      background: r.current ? colors.searchCurrent : colors.searchMatch,
+                      borderRadius: 2,
+                      boxShadow: r.current ? `0 0 0 1px ${colors.searchCurrentBorder}` : 'none'
+                    }}
+                  />
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               autoFocus={autoFocus}
               value={text}
               onChange={e => onChange(e.target.value)}
+              onFocus={onFocusPane}
               placeholder={`${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…`}
               spellCheck={false}
               wrap="off"
@@ -520,6 +612,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
 
+  // Independent find state per side.
+  const [leftSearch, setLeftSearch] = useState<SearchState>(EMPTY_SEARCH);
+  const [rightSearch, setRightSearch] = useState<SearchState>(EMPTY_SEARCH);
+  // Which pane last had focus — Ctrl+F targets it (defaults to right).
+  const [focusedSide, setFocusedSide] = useState<Side>('right');
+  const leftFindInputRef = useRef<HTMLInputElement>(null);
+  const rightFindInputRef = useRef<HTMLInputElement>(null);
+
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
@@ -566,6 +666,86 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   useEffect(() => {
     setCurrentHunkIdx(hunks.length > 0 ? 0 : -1);
   }, [hunks.length]);
+
+  // Search matches per side. Recomputed when the text, query, or case-mode
+  // changes.
+  const leftMatches = useMemo(
+    () => findMatches(leftText, leftSearch.query, leftSearch.caseSensitive),
+    [leftText, leftSearch.query, leftSearch.caseSensitive]
+  );
+  const rightMatches = useMemo(
+    () => findMatches(rightText, rightSearch.query, rightSearch.caseSensitive),
+    [rightText, rightSearch.query, rightSearch.caseSensitive]
+  );
+
+  // Keep each side's currentIdx within range as matches change. When the set
+  // becomes empty → -1; otherwise clamp into [0, len).
+  useEffect(() => {
+    setLeftSearch(s => {
+      const idx = leftMatches.length === 0 ? -1 : Math.min(Math.max(s.currentIdx, 0), leftMatches.length - 1);
+      return idx === s.currentIdx ? s : { ...s, currentIdx: idx };
+    });
+  }, [leftMatches.length]);
+  useEffect(() => {
+    setRightSearch(s => {
+      const idx = rightMatches.length === 0 ? -1 : Math.min(Math.max(s.currentIdx, 0), rightMatches.length - 1);
+      return idx === s.currentIdx ? s : { ...s, currentIdx: idx };
+    });
+  }, [rightMatches.length]);
+
+  // Scroll a pane so the given match is comfortably in view and select its
+  // range in the textarea for a native highlight.
+  const revealMatch = useCallback((side: Side, m: Match | undefined) => {
+    if (!m) return;
+    const paneRef = side === 'left' ? leftPaneRef : rightPaneRef;
+    const taRef = side === 'left' ? leftTextareaRef : rightTextareaRef;
+    const text = side === 'left' ? leftText : rightText;
+    requestAnimationFrame(() => {
+      const pane = paneRef.current;
+      if (pane) {
+        const y = m.line * lineHeight;
+        const top = Math.max(0, y - pane.clientHeight / 3);
+        pane.scrollTo({ top, behavior: 'smooth' });
+      }
+      const ta = taRef.current;
+      if (ta) {
+        const lines = text.split('\n');
+        let offset = 0;
+        for (let i = 0; i < m.line && i < lines.length; i++) offset += lines[i].length + 1;
+        ta.focus({ preventScroll: true });
+        ta.setSelectionRange(offset + m.start, offset + m.end);
+      }
+    });
+  }, [leftText, rightText, lineHeight]);
+
+  // Move to prev/next match on a side (wraps around).
+  const stepMatch = useCallback((side: Side, dir: 1 | -1) => {
+    const matches = side === 'left' ? leftMatches : rightMatches;
+    if (matches.length === 0) return;
+    const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
+    setSearch(s => {
+      const base = s.currentIdx < 0 ? (dir === 1 ? -1 : 0) : s.currentIdx;
+      const next = (base + dir + matches.length) % matches.length;
+      revealMatch(side, matches[next]);
+      return { ...s, currentIdx: next };
+    });
+  }, [leftMatches, rightMatches, revealMatch]);
+
+  // Open the find bar for a side and focus its input.
+  const openFind = useCallback((side: Side) => {
+    const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
+    setSearch(s => ({ ...s, open: true }));
+    requestAnimationFrame(() => {
+      const input = side === 'left' ? leftFindInputRef.current : rightFindInputRef.current;
+      input?.focus();
+      input?.select();
+    });
+  }, []);
+
+  const closeFind = useCallback((side: Side) => {
+    const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
+    setSearch(s => ({ ...s, open: false }));
+  }, []);
 
   // auto-dismiss format error
   useEffect(() => {
@@ -710,7 +890,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ctrl/Cmd+F opens the find bar for the last-focused pane.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        openFind(focusedSide);
+        return;
+      }
       if (e.key === 'Escape') {
+        if (leftSearch.open) { closeFind('left'); return; }
+        if (rightSearch.open) { closeFind('right'); return; }
         if (pickerSide) setPickerSide(null);
         else onClose();
         return;
@@ -722,7 +910,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, pickerSide, goPrevDiff, goNextDiff]);
+  }, [onClose, pickerSide, goPrevDiff, goNextDiff, openFind, closeFind, focusedSide, leftSearch.open, rightSearch.open]);
 
   const stats = useMemo(() => {
     let removed = 0, added = 0, modified = 0;
@@ -764,7 +952,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     modifyRibbon: 'rgba(234, 179, 8, 0.16)',
     accent: '#60a5fa',
     pickerBg: 'rgba(15, 17, 26, 0.96)',
-    pickerItemHover: 'rgba(59, 130, 246, 0.15)'
+    pickerItemHover: 'rgba(59, 130, 246, 0.15)',
+    searchMatch: 'rgba(250, 204, 21, 0.28)',
+    searchCurrent: 'rgba(249, 115, 22, 0.45)',
+    searchCurrentBorder: '#fb923c'
   } : {
     bg: '#f8fafc',
     panelBg: '#ffffff',
@@ -790,7 +981,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     modifyRibbon: 'rgba(234, 179, 8, 0.18)',
     accent: '#2563eb',
     pickerBg: 'rgba(255, 255, 255, 0.98)',
-    pickerItemHover: 'rgba(59, 130, 246, 0.10)'
+    pickerItemHover: 'rgba(59, 130, 246, 0.10)',
+    searchMatch: 'rgba(250, 204, 21, 0.45)',
+    searchCurrent: 'rgba(249, 115, 22, 0.55)',
+    searchCurrentBorder: '#ea580c'
   };
 
   const ribbonWidth = 38;
@@ -858,6 +1052,60 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
   };
 
+  // Floating find bar for a side — anchored top-right of the pane's scroll
+  // area. Rendered only when that side's search is open.
+  const findBar = (side: Side) => {
+    const search = side === 'left' ? leftSearch : rightSearch;
+    if (!search.open) return null;
+    const matches = side === 'left' ? leftMatches : rightMatches;
+    const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
+    const inputRef = side === 'left' ? leftFindInputRef : rightFindInputRef;
+    const total = matches.length;
+    const pos = total === 0 ? 0 : search.currentIdx + 1;
+    return (
+      <div className="dv-find-bar" onMouseDown={e => e.stopPropagation()}>
+        <input
+          ref={inputRef}
+          className="dv-find-input"
+          placeholder="Find…"
+          value={search.query}
+          onChange={e => setSearch(s => ({ ...s, query: e.target.value, currentIdx: e.target.value ? 0 : -1 }))}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); stepMatch(side, e.shiftKey ? -1 : 1); }
+            else if (e.key === 'Escape') { e.preventDefault(); closeFind(side); }
+            else if (e.key === 'F3') { e.preventDefault(); stepMatch(side, e.shiftKey ? -1 : 1); }
+          }}
+        />
+        <span className="dv-find-count">
+          {search.query ? `${pos} / ${total}` : ''}
+        </span>
+        <button
+          className={`dv-find-toggle${search.caseSensitive ? ' active' : ''}`}
+          onClick={() => setSearch(s => ({ ...s, caseSensitive: !s.caseSensitive }))}
+          title="Match case"
+        >
+          Aa
+        </button>
+        <button className="dv-find-nav" onClick={() => stepMatch(side, -1)} disabled={total === 0} title="Previous (Shift+Enter)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="18 15 12 9 6 15"></polyline>
+          </svg>
+        </button>
+        <button className="dv-find-nav" onClick={() => stepMatch(side, 1)} disabled={total === 0} title="Next (Enter)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+        <button className="dv-find-nav" onClick={() => closeFind(side)} title="Close (Esc)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+    );
+  };
+
   const fileChip = (side: Side) => {
     const src = side === 'left' ? leftSrc : rightSrc;
     const title = side === 'left' ? leftTitle : rightTitle;
@@ -906,6 +1154,13 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           {side === 'left' ? 'Left' : 'Right'}
         </span>
         <div style={{ width: 1, height: 14, background: colors.border, margin: '0 4px' }} />
+        <button className="dv-mini-btn" onClick={() => openFind(side)} title="Find (Ctrl+F)">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          Find
+        </button>
         <button className="dv-mini-btn" onClick={() => formatJsonOn(side)} title="Format JSON">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="16 18 22 12 16 6"></polyline>
@@ -1049,6 +1304,47 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         .dv-no-vscrollbar::-webkit-scrollbar:vertical { width: 0; display: none; }
         .dv-no-vscrollbar::-webkit-scrollbar-track { background: transparent; }
         .dv-no-vscrollbar::-webkit-scrollbar-thumb { background: ${theme === 'dark' ? '#334155' : '#cbd5e1'}; border-radius: 10px; border: 2px solid ${colors.bg}; }
+        .dv-find-bar {
+          position: absolute; top: 8px; right: 16px; z-index: 20;
+          display: flex; align-items: center; gap: 4px;
+          padding: 4px 6px; border-radius: 9px;
+          background: ${colors.pickerBg}; backdrop-filter: blur(18px);
+          border: 1px solid ${colors.borderStrong};
+          box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+          animation: diffSlide 0.15s ease-out;
+        }
+        .dv-find-input {
+          width: 168px; height: 26px; padding: 0 8px;
+          border: 1px solid ${colors.border}; border-radius: 6px;
+          background: ${theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)'};
+          color: ${colors.text}; font-size: 12px; font-weight: 600;
+          outline: none; transition: border-color 0.15s;
+        }
+        .dv-find-input:focus { border-color: ${colors.accent}; }
+        .dv-find-input::placeholder { color: ${colors.textDim}; }
+        .dv-find-count {
+          min-width: 46px; text-align: center; font-size: 11px; font-weight: 700;
+          color: ${colors.textSec}; font-variant-numeric: tabular-nums;
+        }
+        .dv-find-toggle {
+          height: 24px; min-width: 26px; padding: 0 6px; border-radius: 6px;
+          border: 1px solid ${colors.border}; background: transparent;
+          color: ${colors.textSec}; font-size: 11px; font-weight: 800;
+          cursor: pointer; transition: all 0.15s;
+        }
+        .dv-find-toggle:hover { color: ${colors.text}; border-color: ${colors.borderStrong}; }
+        .dv-find-toggle.active {
+          color: white; background: ${colors.accent}; border-color: ${colors.accent};
+        }
+        .dv-find-nav {
+          width: 24px; height: 24px; border-radius: 6px;
+          border: 1px solid transparent; background: transparent;
+          color: ${colors.textSec}; cursor: pointer;
+          display: inline-flex; align-items: center; justify-content: center;
+          transition: all 0.15s;
+        }
+        .dv-find-nav:hover:not(:disabled) { color: ${colors.accent}; background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.10)' : 'rgba(59, 130, 246, 0.06)'}; }
+        .dv-find-nav:disabled { opacity: 0.35; cursor: not-allowed; }
         .dv-picker-overlay {
           position: absolute; inset: 0; background: rgba(0,0,0,0.4);
           display: flex; align-items: flex-start; justify-content: center; z-index: 50;
@@ -1196,6 +1492,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('left')}
           bottomPadding={leftBottomPad}
+          matches={leftMatches}
+          currentMatchIdx={leftSearch.currentIdx}
+          onFocusPane={() => setFocusedSide('left')}
+          findBar={findBar('left')}
         />
 
         {/* Connector ribbon column */}
@@ -1238,6 +1538,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('right')}
           bottomPadding={rightBottomPad}
+          matches={rightMatches}
+          currentMatchIdx={rightSearch.currentIdx}
+          onFocusPane={() => setFocusedSide('right')}
+          findBar={findBar('right')}
           autoFocus
         />
 
