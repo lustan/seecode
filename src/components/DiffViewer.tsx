@@ -1035,6 +1035,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       const formatted = JSON.stringify(JSON.parse(text), null, 2);
       handleTextChange(side, formatted);
       setFormatError(null);
+      // Formatting widens the content. The left pane is laid out row-reverse,
+      // so Chrome keeps its right-edge anchor and snaps the horizontal
+      // scrollbar to the far right. Pull both panes back to the leftmost
+      // column (scrollLeft 0) once the new width is measured.
+      requestAnimationFrame(() => {
+        if (leftPaneRef.current) leftPaneRef.current.scrollLeft = 0;
+        if (rightPaneRef.current) rightPaneRef.current.scrollLeft = 0;
+      });
     } catch (e: any) {
       setFormatError({ side, message: 'Invalid JSON' });
     }
