@@ -148,7 +148,7 @@ function EditablePane(props: {
   colors: DiffColors;
   paneRef: React.RefObject<HTMLDivElement>;
   textareaRef?: React.RefObject<HTMLTextAreaElement>;
-  onScroll: (scrollTop: number, fromSide: Side) => void;
+  onScroll: (scrollTop: number, scrollLeft: number, fromSide: Side) => void;
   currentHunkIdx: number;
   toolbar: React.ReactNode;
   autoFocus?: boolean;
@@ -164,9 +164,51 @@ function EditablePane(props: {
 
   const numColWidth = 50;
   const gutterFontSize = Math.max(10, fontSize - 2);
+  const textPadding = 24; // 12px left + 12px right on the textarea
 
   const totalLines = text === '' ? 0 : text.split('\n').length;
   const docHeight = Math.max(totalLines * lineHeight, 0);
+
+  // Track the scroll container's inner width so short documents still fill the
+  // pane (no phantom horizontal scroll) while long lines make it wider.
+  const [availWidth, setAvailWidth] = useState(0);
+  useEffect(() => {
+    const el = paneRef.current;
+    if (!el) return;
+    const update = () => setAvailWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [paneRef]);
+
+  // Width of the text column: wide enough for the longest line so the pane can
+  // scroll horizontally, but never narrower than the available space. Measure
+  // the real rendered width with a canvas (a fixed char-width estimate is wrong
+  // for CJK/wide glyphs and tabs, which left long lines unreachable at max
+  // horizontal scroll).
+  const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const textContentWidth = useMemo(() => {
+    if (typeof document === 'undefined') return 0;
+    let canvas = measureCanvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      measureCanvasRef.current = canvas;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return 0;
+    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    const tab = '  '; // matches the textarea's tabSize of 2
+    let max = 0;
+    for (const raw of text.split('\n')) {
+      const line = raw.indexOf('\t') >= 0 ? raw.replace(/\t/g, tab) : raw;
+      const w = ctx.measureText(line).width;
+      if (w > max) max = w;
+    }
+    // +2 leaves room for the caret at the end of the longest line.
+    return Math.ceil(max) + textPadding + 2;
+  }, [text, fontSize]);
+  const colWidth = Math.max(textContentWidth, Math.max(0, availWidth - numColWidth));
 
   // Per-line kind, indexed by 0-based line in THIS side.
   const lineKinds = useMemo<RowKind[]>(() => {
@@ -240,8 +282,8 @@ function EditablePane(props: {
       {toolbar}
       <div
         ref={paneRef}
-        onScroll={e => onScroll(e.currentTarget.scrollTop, side)}
-        className={side === 'left' ? 'dv-scroll dv-no-scrollbar' : 'dv-scroll'}
+        onScroll={e => onScroll(e.currentTarget.scrollTop, e.currentTarget.scrollLeft, side)}
+        className={side === 'left' ? 'dv-scroll dv-no-vscrollbar' : 'dv-scroll'}
         style={{
           position: 'relative', flex: 1, overflow: 'auto',
           background: colors.panelBg
@@ -251,6 +293,7 @@ function EditablePane(props: {
           position: 'relative',
           minHeight: '100%',
           height: Math.max(docHeight + bottomPadding, 0),
+          width: numColWidth + colWidth,
           display: 'flex',
           flexDirection: side === 'left' ? 'row-reverse' : 'row'
         }}>
@@ -278,10 +321,14 @@ function EditablePane(props: {
           </div>
 
           {/* Line number column — sits on the INNER side of each pane so the
-              two number columns end up next to the center ribbon. */}
+              two number columns end up next to the center ribbon. Sticky on
+              the inner edge so numbers stay visible during horizontal scroll. */}
           <div style={{
             width: numColWidth, flexShrink: 0,
-            position: 'relative',
+            position: 'sticky',
+            [side === 'left' ? 'right' : 'left']: 0,
+            zIndex: 3,
+            alignSelf: 'stretch',
             background: colors.gutterBg,
             fontVariantNumeric: 'tabular-nums'
           }}>
@@ -311,7 +358,7 @@ function EditablePane(props: {
           </div>
 
           {/* Text area + per-line color bands behind it */}
-          <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+          <div style={{ position: 'relative', width: colWidth, flexShrink: 0 }}>
             <div style={{
               position: 'absolute', inset: 0, pointerEvents: 'none'
             }}>
@@ -565,7 +612,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return line + acc;
   }, [hunks]);
 
-  const handleScroll = useCallback((scrollTop: number, fromSide: Side) => {
+  const handleScroll = useCallback((scrollTop: number, scrollLeft: number, fromSide: Side) => {
     if (fromSide === 'left') setLeftScrollTop(scrollTop);
     else setRightScrollTop(scrollTop);
 
@@ -599,6 +646,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         otherRef.current.scrollTop = target;
         if (fromSide === 'left') setRightScrollTop(target);
         else setLeftScrollTop(target);
+      }
+
+      // Mirror horizontal scroll directly — both panes share the same
+      // character grid, so a 1:1 left offset keeps them aligned.
+      const otherHMax = Math.max(0, otherRef.current.scrollWidth - otherRef.current.clientWidth);
+      const hTarget = Math.max(0, Math.min(otherHMax, scrollLeft));
+      if (Math.abs(otherRef.current.scrollLeft - hTarget) > 1) {
+        otherRef.current.scrollLeft = hTarget;
       }
     }
     requestAnimationFrame(() => { syncingScrollRef.current = null; });
@@ -976,6 +1031,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         .dv-scroll::-webkit-scrollbar-thumb:hover { background: ${theme === 'dark' ? '#475569' : '#94a3b8'}; }
         .dv-no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
         .dv-no-scrollbar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+        /* Left pane: hide only the vertical scrollbar (the ribbon-adjacent
+           right pane carries the shared vertical one) but KEEP the horizontal
+           one so long lines can still be scrolled sideways. */
+        .dv-no-vscrollbar::-webkit-scrollbar:vertical { width: 0; display: none; }
+        .dv-no-vscrollbar::-webkit-scrollbar-track { background: transparent; }
+        .dv-no-vscrollbar::-webkit-scrollbar-thumb { background: ${theme === 'dark' ? '#334155' : '#cbd5e1'}; border-radius: 10px; border: 2px solid ${colors.bg}; }
         .dv-picker-overlay {
           position: absolute; inset: 0; background: rgba(0,0,0,0.4);
           display: flex; align-items: flex-start; justify-content: center; z-index: 50;
