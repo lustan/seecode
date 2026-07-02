@@ -10,7 +10,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { githubLight } from '@uiw/codemirror-theme-github';
 import { EditorView, keymap, Decoration, DecorationSet } from '@codemirror/view';
 import { placeholder as placeholderExt } from '@codemirror/view';
-import { syntaxTree } from '@codemirror/language';
+import { syntaxTree, codeFolding, foldGutter, foldKeymap } from '@codemirror/language';
 import { linter, Diagnostic, lintGutter } from '@codemirror/lint';
 import { Extension, StateEffect, StateField, RangeSetBuilder, Prec } from '@codemirror/state';
 import { SupportedLanguage, detectLanguage, getSupportedLanguages, getLanguageDisplayName } from '../utils/languageDetector';
@@ -159,10 +159,82 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
     return diagnostics;
   }), [currentLanguage]);
 
+  // JSON code folding with a count-aware placeholder: shows array length or
+  // object key-count on the collapsed line. This is a foldConfig override that
+  // only customizes the placeholder — the fold gutter itself is shared across
+  // all languages (see sharedFoldingExt) so markdown/js/etc. keep folding too.
+  const jsonFoldingExt = useMemo<Extension[]>(() => {
+    // @codemirror/lang-json folds the range *inside* the braces, so the opening
+    // bracket sits at range.from - 1. Count top-level entries (commas + 1) with a
+    // lightweight string-aware walker — avoids JSON.parse of a possibly-partial range.
+    const summarize = (openChar: string, inner: string): string => {
+      const isArray = openChar === '[';
+      const isObject = openChar === '{';
+      if (!isArray && !isObject) return '…';
+
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let count = 0;
+      let sawContent = false;
+
+      for (let i = 0; i < inner.length; i++) {
+        const ch = inner[i];
+        if (inString) {
+          if (escaped) { escaped = false; }
+          else if (ch === '\\') { escaped = true; }
+          else if (ch === '"') { inString = false; }
+          continue;
+        }
+        if (ch === '"') { inString = true; sawContent = true; continue; }
+        if (ch === '{' || ch === '[') { depth++; sawContent = true; continue; }
+        if (ch === '}' || ch === ']') { depth--; continue; }
+        if (depth === 0) {
+          if (ch === ',') { count++; }
+          else if (!sawContent && ch.trim() !== '') { sawContent = true; }
+        }
+      }
+
+      // entries = top-level separators + 1; empty container has 0
+      const total = sawContent ? count + 1 : 0;
+      if (isArray) return total === 1 ? '1 item' : `${total} items`;
+      return total === 1 ? '1 key' : `${total} keys`;
+    };
+
+    return [
+      codeFolding({
+        preparePlaceholder: (state, range) => {
+          const openChar = range.from > 0 ? state.doc.sliceString(range.from - 1, range.from) : '';
+          return summarize(openChar, state.doc.sliceString(range.from, range.to));
+        },
+        placeholderDOM: (view, onclick, prepared) => {
+          const el = document.createElement('span');
+          el.className = 'cm-json-fold-placeholder';
+          el.textContent = `⋯ ${prepared ?? '…'}`;
+          el.title = 'Click to expand';
+          el.onclick = onclick;
+          return el;
+        }
+      })
+    ];
+  }, []);
+
+  // Fold gutter + keymap shared by every language so all file types stay foldable.
+  const sharedFoldingExt = useMemo<Extension[]>(() => [
+    foldGutter({
+      markerDOM: (folded) => {
+        const el = document.createElement('span');
+        el.className = 'cm-json-fold-marker';
+        el.textContent = folded ? '▸' : '▾';
+        return el;
+      }
+    }),
+    keymap.of(foldKeymap)
+  ], []);
+
   const getLanguageExt = (lang: SupportedLanguage) => {
     switch(lang) {
-      case 'json': return [json(), ideaJsonLinter, lintGutter()];
-      case 'javascript': return [javascript()];
+      case 'json': return [json(), ideaJsonLinter, lintGutter(), ...jsonFoldingExt];
       case 'python': return [python()];
       case 'java': return [java()];
       case 'sql': return [sql()];
@@ -638,6 +710,41 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
           border-bottom: 2px solid #facc15;
         }
 
+        .cm-json-fold-placeholder {
+          margin: 0 4px;
+          padding: 0 8px;
+          border-radius: 5px;
+          font-size: 0.85em;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+          cursor: pointer;
+          user-select: none;
+          color: ${theme === 'dark' ? '#93c5fd' : '#2563eb'};
+          background: ${theme === 'dark' ? 'rgba(59, 130, 246, 0.16)' : 'rgba(59, 130, 246, 0.1)'};
+          border: 1px solid ${theme === 'dark' ? 'rgba(96, 165, 250, 0.35)' : 'rgba(59, 130, 246, 0.25)'};
+          transition: all 0.15s;
+        }
+        .cm-json-fold-placeholder:hover {
+          background: ${theme === 'dark' ? 'rgba(59, 130, 246, 0.28)' : 'rgba(59, 130, 246, 0.18)'};
+          border-color: ${theme === 'dark' ? 'rgba(147, 197, 253, 0.6)' : 'rgba(59, 130, 246, 0.45)'};
+        }
+
+        .cm-json-fold-marker {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          font-size: 15px;
+          line-height: 1;
+          cursor: pointer;
+          color: ${theme === 'dark' ? '#64748b' : '#94a3b8'};
+          transition: color 0.15s, transform 0.15s;
+        }
+        .cm-json-fold-marker:hover {
+          color: ${theme === 'dark' ? '#93c5fd' : '#2563eb'};
+          transform: scale(1.15);
+        }
+
         .plex-find-icon {
           color: ${theme === 'dark' ? '#8ea0bb' : '#71839d'};
           display: flex;
@@ -756,6 +863,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
           theme={theme === 'dark' ? oneDark : githubLight}
           extensions={[
             ...getLanguageExt(currentLanguage),
+            ...sharedFoldingExt,
             ...(wrap ? [EditorView.lineWrapping] : []),
             searchHighlightField as Extension,
             searchKeyBindings as Extension,
@@ -765,12 +873,20 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
               '.cm-scroller': { overflow: 'auto' },
               '.cm-content': { padding: '16px 0' },
               '.cm-gutters': { background: 'transparent', border: 'none', color: '#334155' },
+              '.cm-lineNumbers .cm-gutterElement': { padding: '0 1px 0 6px', minWidth: '0' },
+              '.cm-foldGutter': { minWidth: 'auto' },
+              '.cm-foldGutter .cm-gutterElement': { padding: '0 4px 0 0' },
+              // Compact the lint gutter so JSON's line-number → fold-arrow gap matches
+              // languages without a linter (e.g. markdown). Default lint gutter reserves ~1.4em.
+              '.cm-gutter-lint': { width: 'auto', minWidth: '0' },
+              '.cm-gutter-lint .cm-gutterElement': { padding: '0' },
+              '.cm-gutter-lint .cm-lint-marker': { width: '0.9em', height: '0.9em' },
               '.cm-activeLine': { background: theme === 'dark' ? 'rgba(59, 130, 246, 0.05)' : 'rgba(59, 130, 246, 0.03)' },
               '.cm-selectionBackground': { background: '#1e3a8a !important' },
               '.cm-lint-point': { background: 'rgba(239, 68, 68, 0.1)' }
             })
           ]}
-          basicSetup={{ searchKeymap: false }}
+          basicSetup={{ searchKeymap: false, foldGutter: false }}
           style={{ height: '100%', width: '100%' }}
         />
       </div>
