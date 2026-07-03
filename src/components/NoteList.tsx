@@ -169,6 +169,31 @@ export default function NoteList({
     editingInputRef.current?.select();
   }, [editingId]);
 
+  // On mount (and whenever the active file changes), scroll the selected row
+  // into view so reopening the plugin lands with the last-opened file visible
+  // instead of leaving the scrollbar at the top. `didInitialScroll` guards the
+  // one-time mount scroll so later re-renders don't re-run it while the user is
+  // scrolling around; an explicit selection change still re-triggers it.
+  const didInitialScroll = useRef(false);
+  useEffect(() => {
+    if (!activeId) return;
+    const scroll = () => {
+      const el = noteRowRefs.current.get(activeId);
+      const scroller = listScrollRef.current;
+      if (!el || !scroller) return;
+      // Only scroll when the row is actually outside the visible area.
+      const rowRect = el.getBoundingClientRect();
+      const boxRect = scroller.getBoundingClientRect();
+      if (rowRect.top < boxRect.top || rowRect.bottom > boxRect.bottom) {
+        el.scrollIntoView({ block: 'center', behavior: didInitialScroll.current ? 'smooth' : 'auto' });
+      }
+    };
+    // Defer a frame so the list (and any expanded folders) has laid out.
+    const raf = requestAnimationFrame(scroll);
+    didInitialScroll.current = true;
+    return () => cancelAnimationFrame(raf);
+  }, [activeId]);
+
   useEffect(() => {
     if (!editingFolderId) return;
     editingFolderInputRef.current?.focus();

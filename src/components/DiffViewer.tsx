@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Note } from '../App';
 
 interface Props {
@@ -141,6 +141,131 @@ function buildHunks(ops: DiffOp[], leftTotal: number, rightTotal: number): Hunk[
 }
 
 // =============================================================================
+// Collapse unchanged fragments (IDEA-style folding)
+// -----------------------------------------------------------------------------
+// Equal regions between hunks map 1:1 left↔right, so a region collapsed by the
+// same amount on both sides keeps the two panes row-aligned. We keep CONTEXT
+// lines of unchanged text next to each change and fold the middle into a single
+// clickable "⋯ N unchanged lines" strip.
+// =============================================================================
+const CONTEXT_LINES = 3;
+// Only fold a gap when doing so hides at least this many lines — otherwise the
+// strip would save no space.
+const COLLAPSE_MIN = 4;
+
+type CollapseRegion = {
+  id: string;
+  // Inclusive 0-based hidden line ranges on each side (equal length).
+  leftStart: number; leftEnd: number;
+  rightStart: number; rightEnd: number;
+  count: number;
+};
+
+// Derive foldable regions from the hunk list + each side's total line count.
+// Walks the equal gaps: before the first hunk, between hunks, and after the
+// last. Leading/trailing gaps keep context only on the side facing a change.
+function computeCollapseRegions(hunks: Hunk[], leftTotal: number, rightTotal: number): CollapseRegion[] {
+  type Gap = { ls: number; le: number; rs: number; re: number; pos: 'lead' | 'mid' | 'trail' | 'all' };
+  const gaps: Gap[] = [];
+  if (hunks.length === 0) {
+    gaps.push({ ls: 0, le: leftTotal - 1, rs: 0, re: rightTotal - 1, pos: 'all' });
+  } else {
+    gaps.push({ ls: 0, le: hunks[0].leftFirst - 1, rs: 0, re: hunks[0].rightFirst - 1, pos: 'lead' });
+    for (let k = 0; k < hunks.length - 1; k++) {
+      gaps.push({
+        ls: hunks[k].leftLast + 1, le: hunks[k + 1].leftFirst - 1,
+        rs: hunks[k].rightLast + 1, re: hunks[k + 1].rightFirst - 1, pos: 'mid'
+      });
+    }
+    const last = hunks[hunks.length - 1];
+    gaps.push({ ls: last.leftLast + 1, le: leftTotal - 1, rs: last.rightLast + 1, re: rightTotal - 1, pos: 'trail' });
+  }
+
+  const regions: CollapseRegion[] = [];
+  for (const g of gaps) {
+    const len = g.le - g.ls + 1;
+    if (len <= 0) continue;
+    // Equal regions must have matching length on both sides — bail if not.
+    if (g.le - g.ls !== g.re - g.rs) continue;
+
+    let hlStart: number, hlEnd: number, hrStart: number, hrEnd: number;
+    if (g.pos === 'lead') {
+      // Only a change below → keep context at the bottom, fold from the top.
+      hlStart = g.ls; hlEnd = g.le - CONTEXT_LINES;
+      hrStart = g.rs; hrEnd = g.re - CONTEXT_LINES;
+    } else if (g.pos === 'trail') {
+      // Only a change above → keep context at the top, fold to the end.
+      hlStart = g.ls + CONTEXT_LINES; hlEnd = g.le;
+      hrStart = g.rs + CONTEXT_LINES; hrEnd = g.re;
+    } else {
+      // Changes on both sides ('mid') or none at all ('all') → context both ends.
+      hlStart = g.ls + CONTEXT_LINES; hlEnd = g.le - CONTEXT_LINES;
+      hrStart = g.rs + CONTEXT_LINES; hrEnd = g.re - CONTEXT_LINES;
+    }
+    const count = hlEnd - hlStart + 1;
+    if (count < COLLAPSE_MIN) continue;
+    regions.push({ id: `${g.ls}:${g.le}`, leftStart: hlStart, leftEnd: hlEnd, rightStart: hrStart, rightEnd: hrEnd, count });
+  }
+  return regions;
+}
+
+// A display row is either a run of visible document lines or a single fold strip.
+type DisplayItem =
+  | { type: 'lines'; index: number; startLine: number; endLine: number; startRow: number }
+  | { type: 'strip'; index: number; regionId: string; row: number; count: number };
+
+type SideLayout = {
+  items: DisplayItem[];
+  totalRows: number;
+  // rowOfLine[line] = display row of that line's top. rowOfLine[totalLines] = totalRows.
+  // Hidden lines map to their strip's row.
+  rowOfLine: number[];
+  // lineOfRow[row] = document line at that display row (strip rows → first hidden line).
+  lineOfRow: number[];
+};
+
+// Turn a side's line count + active (non-expanded) collapse regions into an
+// ordered list of display items plus line↔row lookup tables.
+function buildSideLayout(side: Side, totalLines: number, regions: CollapseRegion[]): SideLayout {
+  const items: DisplayItem[] = [];
+  const rowOfLine = new Array(Math.max(totalLines + 1, 1)).fill(0);
+  const lineOfRow: number[] = [];
+
+  const startOf = (r: CollapseRegion) => (side === 'left' ? r.leftStart : r.rightStart);
+  const endOf = (r: CollapseRegion) => (side === 'left' ? r.leftEnd : r.rightEnd);
+  const startMap = new Map<number, CollapseRegion>();
+  for (const r of regions) startMap.set(startOf(r), r);
+  const sortedStarts = regions.map(startOf).sort((a, b) => a - b);
+
+  let row = 0, line = 0, index = 0;
+  while (line < totalLines) {
+    const r = startMap.get(line);
+    if (r) {
+      const e = endOf(r);
+      items.push({ type: 'strip', index: index++, regionId: r.id, row, count: r.count });
+      for (let l = line; l <= e; l++) rowOfLine[l] = row;
+      lineOfRow[row] = line;
+      row += 1;
+      line = e + 1;
+      continue;
+    }
+    // Emit the visible run up to the next fold start (or EOF).
+    let nextStart = totalLines;
+    for (const s of sortedStarts) { if (s > line) { nextStart = s; break; } }
+    const segStart = line;
+    const segEnd = nextStart - 1;
+    items.push({ type: 'lines', index: index++, startLine: segStart, endLine: segEnd, startRow: row });
+    for (let l = segStart; l <= segEnd; l++) { rowOfLine[l] = row + (l - segStart); lineOfRow[row + (l - segStart)] = l; }
+    row += (segEnd - segStart + 1);
+    line = segEnd + 1;
+  }
+  rowOfLine[totalLines] = row;
+  // Keep an editable buffer for a fully-empty side.
+  if (items.length === 0) items.push({ type: 'lines', index: 0, startLine: 0, endLine: -1, startRow: 0 });
+  return { items, totalRows: row, rowOfLine, lineOfRow };
+}
+
+// =============================================================================
 // Theme colors
 // =============================================================================
 type DiffColors = {
@@ -174,21 +299,29 @@ type DiffColors = {
   searchCurrentBorder: string;
 };
 
+// Imperative handle a pane exposes so the parent can focus a specific document
+// line + selection range regardless of which segment textarea it lives in.
+type PaneHandle = {
+  focusRange: (line: number, start: number, end: number) => void;
+};
+
 // =============================================================================
-// EditablePane — a single full-document textarea per side. Per-line color
-// bands and a line-number gutter sit behind it as overlays. Heights match the
-// side's own line count, NOT the merged row count → IDEA-style natural heights.
+// EditablePane — the side's document, split into one textarea per VISIBLE
+// segment with clickable "⋯ N unchanged lines" fold strips between them. Per-
+// line color bands and a line-number gutter sit behind as overlays. Everything
+// is positioned in DISPLAY-ROW space (folded lines removed) via `layout`.
 // =============================================================================
 function EditablePane(props: {
   side: Side;
   text: string;
   onChange: (v: string) => void;
   hunks: Hunk[];
+  layout: SideLayout;
   lineHeight: number;
   fontSize: number;
   colors: DiffColors;
   paneRef: React.RefObject<HTMLDivElement>;
-  textareaRef?: React.RefObject<HTMLTextAreaElement>;
+  apiRef?: React.MutableRefObject<PaneHandle | null>;
   onScroll: (scrollTop: number, scrollLeft: number, fromSide: Side) => void;
   currentHunkIdx: number;
   toolbar: React.ReactNode;
@@ -197,17 +330,24 @@ function EditablePane(props: {
   matches: Match[];
   currentMatchIdx: number;
   onFocusPane?: () => void;
+  /** Focus left the pane's textareas — parent clears active-edit tracking. */
+  onBlurPane?: () => void;
   /** Floating find bar for this side (or null when closed). */
   findBar?: React.ReactNode;
+  /** Expand the collapsed region with this id (click on a fold strip). */
+  onExpandRegion: (id: string) => void;
+  /** Report the doc line the caret is editing, so the parent keeps that
+   *  region from auto-collapsing while the user types in it. */
+  onActiveLine?: (line: number) => void;
   /** Extra space appended below the document so both panes have matching
    *  total scroll heights — keeps scroll-sync aligned at the bottom. */
   bottomPadding: number;
 }) {
   const {
-    side, text, onChange, hunks,
-    lineHeight, fontSize, colors, paneRef, textareaRef, onScroll,
+    side, text, onChange, hunks, layout,
+    lineHeight, fontSize, colors, paneRef, apiRef, onScroll,
     currentHunkIdx, toolbar, autoFocus, bottomPadding,
-    matches, currentMatchIdx, onFocusPane, findBar
+    matches, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
   } = props;
 
   const numColWidth = 50;
@@ -215,15 +355,81 @@ function EditablePane(props: {
   const textPadding = 24; // 12px left + 12px right on the textarea
 
   const totalLines = text === '' ? 0 : text.split('\n').length;
-  const docHeight = Math.max(totalLines * lineHeight, 0);
+  const { rowOfLine, totalRows } = layout;
+  const docHeight = Math.max(totalRows * lineHeight, 0);
 
-  // Track the scroll container's inner width so short documents still fill the
-  // pane (no phantom horizontal scroll) while long lines make it wider.
+  const docLines = useMemo(() => text.split('\n'), [text]);
+
+  // A line is folded away when its display row is a strip row (which reports
+  // the region's first line, not this line).
+  const isHidden = useCallback((line: number): boolean => {
+    const row = rowOfLine[line];
+    return layout.lineOfRow[row] !== line;
+  }, [rowOfLine, layout.lineOfRow]);
+
+  // Per-segment textarea elements, keyed by display item index. Lets the
+  // parent (and internal helpers) focus the right box for a given line.
+  const segEls = useRef<Map<number, HTMLTextAreaElement>>(new Map());
+
+  // Absolute document caret offset pending restoration after an edit re-diffs
+  // and possibly re-segments the pane (see the useLayoutEffect below).
+  const pendingCaretRef = useRef<number | null>(null);
+
+  // Rebuild each visible segment's text from the current document lines.
+  const segmentText = useCallback((startLine: number, endLine: number): string => {
+    if (endLine < startLine) return '';
+    return docLines.slice(startLine, endLine + 1).join('\n');
+  }, [docLines]);
+
+  // Splice an edited segment back into the whole document, then bubble up.
+  // Also record the caret's new ABSOLUTE document offset so the layout effect
+  // can restore it after the re-diff possibly re-segments the pane.
+  const handleSegmentChange = useCallback((startLine: number, endLine: number, el: HTMLTextAreaElement) => {
+    const value = el.value;
+    const before = docLines.slice(0, startLine);
+    const after = endLine < startLine ? docLines.slice(startLine) : docLines.slice(endLine + 1);
+    // Absolute offset of the caret in the whole document = (chars in all lines
+    // before this segment) + (caret offset within the segment).
+    let segStartOffset = 0;
+    for (let i = 0; i < startLine; i++) segStartOffset += (docLines[i]?.length ?? 0) + 1;
+    pendingCaretRef.current = segStartOffset + el.selectionStart;
+    // Report the doc line the caret sits on so the parent can keep that
+    // region unfolded — otherwise an edit that makes the region "unchanged"
+    // would collapse it out from under the cursor.
+    const caretDocLine = startLine + (value.slice(0, el.selectionStart).split('\n').length - 1);
+    onActiveLine?.(caretDocLine);
+    onChange([...before, ...value.split('\n'), ...after].join('\n'));
+  }, [docLines, onChange, onActiveLine]);
+
+  // Locate the segment holding `line`, focus its textarea and select [start,end].
+  const focusRange = useCallback((line: number, start: number, end: number) => {
+    const item = layout.items.find(it => it.type === 'lines' && line >= it.startLine && line <= it.endLine) as
+      Extract<DisplayItem, { type: 'lines' }> | undefined;
+    const target = item ?? (layout.items.find(it => it.type === 'lines') as Extract<DisplayItem, { type: 'lines' }> | undefined);
+    if (!target) return;
+    const el = segEls.current.get(target.index);
+    if (!el) return;
+    let offset = 0;
+    for (let i = target.startLine; i < line && i <= target.endLine; i++) offset += (docLines[i]?.length ?? 0) + 1;
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(offset + start, offset + end);
+  }, [layout.items, docLines]);
+
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = { focusRange };
+    return () => { if (apiRef.current?.focusRange === focusRange) apiRef.current = null; };
+  }, [apiRef, focusRange]);
+
+  // Track the scroll container's inner width/height so short documents still
+  // fill the pane (no phantom horizontal scroll, and the last segment stretches
+  // to fill the blank area below the text so clicks there still land a caret).
   const [availWidth, setAvailWidth] = useState(0);
+  const [availHeight, setAvailHeight] = useState(0);
   useEffect(() => {
     const el = paneRef.current;
     if (!el) return;
-    const update = () => setAvailWidth(el.clientWidth);
+    const update = () => { setAvailWidth(el.clientWidth); setAvailHeight(el.clientHeight); };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -258,9 +464,71 @@ function EditablePane(props: {
   }, [text, fontSize]);
   const colWidth = Math.max(textContentWidth, Math.max(0, availWidth - numColWidth));
 
+  // Index of the last visible text segment — its textarea is stretched to fill
+  // the empty area below the document so clicking anywhere in the blank space
+  // still lands a caret (instead of doing nothing).
+  const lastLinesIndex = useMemo(() => {
+    let idx = -1;
+    for (const it of layout.items) if (it.type === 'lines') idx = it.index;
+    return idx;
+  }, [layout.items]);
+
+  // The left pane is laid out row-reverse (its gutter hugs the center ribbon).
+  // A row-reverse flex container anchors its scroll to the RIGHT edge, so any
+  // relayout — e.g. editing a long diff line away — makes Chrome snap the
+  // horizontal scrollbar to the far right. We track the intended scrollLeft on
+  // every scroll and reassert it synchronously after each render (before paint)
+  // so the left pane keeps the user's horizontal position instead of jumping.
+  const hScrollRef = useRef(0);
+  const handlePaneScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    hScrollRef.current = e.currentTarget.scrollLeft;
+    onScroll(e.currentTarget.scrollTop, e.currentTarget.scrollLeft, side);
+  }, [onScroll, side]);
+  useLayoutEffect(() => {
+    if (side !== 'left') return;
+    const el = paneRef.current;
+    if (el && Math.abs(el.scrollLeft - hScrollRef.current) > 1) {
+      el.scrollLeft = hScrollRef.current;
+    }
+  });
+
+  // Restore the text caret after an edit. Every keystroke re-diffs, which can
+  // re-segment the pane (segments mount/unmount) and drop the native caret.
+  // We stash the caret's ABSOLUTE document offset on edit and, after the
+  // re-render, map it back to whichever segment now holds it. Absolute offset
+  // survives re-segmentation; a per-segment index would not.
+  useLayoutEffect(() => {
+    const off = pendingCaretRef.current;
+    if (off == null) return;
+    pendingCaretRef.current = null;
+
+    // Absolute offset → (doc line, column).
+    let acc = 0, lineIdx = 0, col = 0;
+    for (let i = 0; i < docLines.length; i++) {
+      const len = docLines[i].length;
+      if (off <= acc + len) { lineIdx = i; col = off - acc; break; }
+      acc += len + 1;
+      lineIdx = i; col = len;
+    }
+    // Find the visible segment holding that line (edited lines are inside a
+    // change hunk, which is never folded, so this normally hits directly).
+    const target = layout.items.find(
+      it => it.type === 'lines' && lineIdx >= it.startLine && lineIdx <= it.endLine
+    ) as Extract<DisplayItem, { type: 'lines' }> | undefined;
+    if (!target) return;
+    const el = segEls.current.get(target.index);
+    if (!el) return;
+    let within = 0;
+    for (let i = target.startLine; i < lineIdx; i++) within += (docLines[i]?.length ?? 0) + 1;
+    within += col;
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(within, within);
+  }, [docLines, layout]);
+
   // Pixel rects for each search match, positioned with the same canvas metrics
   // used for column width so CJK/wide glyphs and tabs land correctly. x is the
   // width of the text before the match; width is the matched substring's width.
+  // `top` is in DISPLAY-ROW space; matches on folded lines are dropped.
   const matchRects = useMemo(() => {
     if (matches.length === 0 || typeof document === 'undefined') return [];
     const canvas = measureCanvasRef.current || document.createElement('canvas');
@@ -271,15 +539,18 @@ function EditablePane(props: {
     const tab = '  ';
     const lines = text.split('\n');
     const expand = (s: string) => (s.indexOf('\t') >= 0 ? s.replace(/\t/g, tab) : s);
-    return matches.map((m, i) => {
-      const raw = lines[m.line] ?? '';
-      const before = expand(raw.slice(0, m.start));
-      const inner = expand(raw.slice(m.start, m.end));
-      const x = 12 + ctx.measureText(before).width; // 12 = textarea left padding
-      const w = Math.max(1, ctx.measureText(inner).width);
-      return { x, w, top: m.line * lineHeight, current: i === currentMatchIdx };
-    });
-  }, [matches, currentMatchIdx, text, fontSize, lineHeight]);
+    return matches
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => !isHidden(m.line))
+      .map(({ m, i }) => {
+        const raw = lines[m.line] ?? '';
+        const before = expand(raw.slice(0, m.start));
+        const inner = expand(raw.slice(m.start, m.end));
+        const x = 12 + ctx.measureText(before).width; // 12 = textarea left padding
+        const w = Math.max(1, ctx.measureText(inner).width);
+        return { x, w, top: rowOfLine[m.line] * lineHeight, current: i === currentMatchIdx };
+      });
+  }, [matches, currentMatchIdx, text, fontSize, lineHeight, rowOfLine, isHidden]);
 
   // Per-line kind, indexed by 0-based line in THIS side.
   const lineKinds = useMemo<RowKind[]>(() => {
@@ -334,13 +605,13 @@ function EditablePane(props: {
     for (const h of hunks) {
       if (side === 'left' && h.kind === 'add') {
         // left collapses → mark at h.leftFirst (= h.leftLast+1 since empty)
-        out.push({ y: h.leftFirst * lineHeight, color: colors.addStrong });
+        out.push({ y: rowOfLine[h.leftFirst] * lineHeight, color: colors.addStrong });
       } else if (side === 'right' && h.kind === 'remove') {
-        out.push({ y: h.rightFirst * lineHeight, color: colors.removeStrong });
+        out.push({ y: rowOfLine[h.rightFirst] * lineHeight, color: colors.removeStrong });
       }
     }
     return out;
-  }, [hunks, side, lineHeight, colors.addStrong, colors.removeStrong]);
+  }, [hunks, side, lineHeight, rowOfLine, colors.addStrong, colors.removeStrong]);
 
   // currentHunkIdx is currently unreferenced — silence unused warnings.
   void currentHunkIdx;
@@ -354,7 +625,7 @@ function EditablePane(props: {
       {findBar}
       <div
         ref={paneRef}
-        onScroll={e => onScroll(e.currentTarget.scrollTop, e.currentTarget.scrollLeft, side)}
+        onScroll={handlePaneScroll}
         className={side === 'left' ? 'dv-scroll dv-no-vscrollbar' : 'dv-scroll'}
         style={{
           position: 'relative', flex: 1, overflow: 'auto',
@@ -394,7 +665,9 @@ function EditablePane(props: {
 
           {/* Line number column — sits on the INNER side of each pane so the
               two number columns end up next to the center ribbon. Sticky on
-              the inner edge so numbers stay visible during horizontal scroll. */}
+              the inner edge so numbers stay visible during horizontal scroll.
+              Positioned in DISPLAY-ROW space; folded lines are omitted and the
+              fold strip gets its own gutter row. */}
           <div style={{
             width: numColWidth, flexShrink: 0,
             position: 'sticky',
@@ -404,28 +677,47 @@ function EditablePane(props: {
             background: colors.gutterBg,
             fontVariantNumeric: 'tabular-nums'
           }}>
-            {lineKinds.map((k, idx) => {
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    position: 'absolute',
-                    top: idx * lineHeight,
-                    left: 0, right: 0,
-                    height: lineHeight,
-                    padding: '0 8px',
-                    textAlign: side === 'left' ? 'right' : 'left',
-                    color: gutterLineColor(k),
-                    background: gutterLineBg(k),
-                    fontSize: gutterFontSize,
-                    lineHeight: `${lineHeight}px`,
-                    fontWeight: k !== 'equal' ? 700 : 500,
-                    userSelect: 'none'
-                  }}
-                >
-                  {idx + 1}
-                </div>
-              );
+            {layout.items.map(item => {
+              if (item.type === 'strip') {
+                return (
+                  <div
+                    key={`g-strip-${item.index}`}
+                    style={{
+                      position: 'absolute',
+                      top: item.row * lineHeight,
+                      left: 0, right: 0,
+                      height: lineHeight,
+                      background: colors.gutterBg
+                    }}
+                  />
+                );
+              }
+              const rows = [];
+              for (let ln = item.startLine; ln <= item.endLine; ln++) {
+                const k = lineKinds[ln] ?? 'equal';
+                rows.push(
+                  <div
+                    key={`g-${ln}`}
+                    style={{
+                      position: 'absolute',
+                      top: rowOfLine[ln] * lineHeight,
+                      left: 0, right: 0,
+                      height: lineHeight,
+                      padding: '0 8px',
+                      textAlign: side === 'left' ? 'right' : 'left',
+                      color: gutterLineColor(k),
+                      background: gutterLineBg(k),
+                      fontSize: gutterFontSize,
+                      lineHeight: `${lineHeight}px`,
+                      fontWeight: k !== 'equal' ? 700 : 500,
+                      userSelect: 'none'
+                    }}
+                  >
+                    {ln + 1}
+                  </div>
+                );
+              }
+              return rows;
             })}
           </div>
 
@@ -434,20 +726,26 @@ function EditablePane(props: {
             <div style={{
               position: 'absolute', inset: 0, pointerEvents: 'none'
             }}>
-              {lineKinds.map((k, idx) => {
-                if (k === 'equal') return null;
-                return (
-                  <div
-                    key={idx}
-                    style={{
-                      position: 'absolute',
-                      top: idx * lineHeight,
-                      left: 0, right: 0,
-                      height: lineHeight,
-                      background: lineBg(k)
-                    }}
-                  />
-                );
+              {layout.items.map(item => {
+                if (item.type !== 'lines') return null;
+                const bands = [];
+                for (let ln = item.startLine; ln <= item.endLine; ln++) {
+                  const k = lineKinds[ln] ?? 'equal';
+                  if (k === 'equal') continue;
+                  bands.push(
+                    <div
+                      key={`b-${ln}`}
+                      style={{
+                        position: 'absolute',
+                        top: rowOfLine[ln] * lineHeight,
+                        left: 0, right: 0,
+                        height: lineHeight,
+                        background: lineBg(k)
+                      }}
+                    />
+                  );
+                }
+                return bands;
               })}
             </div>
             {/* Search-match highlight overlay — sits above the color bands but
@@ -471,34 +769,90 @@ function EditablePane(props: {
                 ))}
               </div>
             )}
-            <textarea
-              ref={textareaRef}
-              autoFocus={autoFocus}
-              value={text}
-              onChange={e => onChange(e.target.value)}
-              onFocus={onFocusPane}
-              placeholder={`${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…`}
-              spellCheck={false}
-              wrap="off"
-              style={{
-                position: 'relative', zIndex: 1,
-                width: '100%',
-                height: Math.max(docHeight + bottomPadding, '100%' as any),
-                minHeight: '100%',
-                padding: '0 12px',
-                resize: 'none', outline: 'none', border: 'none',
-                background: 'transparent',
-                color: colors.text,
-                caretColor: colors.accent,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: `${fontSize}px`,
-                lineHeight: `${lineHeight}px`,
-                tabSize: 2,
-                whiteSpace: 'pre',
-                overflow: 'hidden',
-                display: 'block'
-              }}
-            />
+            {/* One textarea per visible segment, positioned at its display row.
+                Fold strips render as clickable "⋯ N unchanged lines" bands. */}
+            {layout.items.map(item => {
+              if (item.type === 'strip') {
+                return (
+                  <div
+                    key={`strip-${item.index}`}
+                    className="dv-fold-strip"
+                    onClick={() => onExpandRegion(item.regionId)}
+                    title="Click to expand unchanged lines"
+                    style={{
+                      position: 'absolute', zIndex: 2,
+                      top: item.row * lineHeight,
+                      left: 0, right: 0,
+                      height: lineHeight,
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '0 12px',
+                      fontSize: Math.max(10, fontSize - 2),
+                      lineHeight: `${lineHeight}px`
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="7 8 3 12 7 16"></polyline>
+                      <polyline points="17 8 21 12 17 16"></polyline>
+                    </svg>
+                    {item.count} unchanged {item.count === 1 ? 'line' : 'lines'}
+                  </div>
+                );
+              }
+              const segStartRow = item.startRow;
+              // The last visible segment stretches to cover the blank area below
+              // the document (down to the bottom of the scroll viewport, or the
+              // document's natural end — whichever is lower) so a click anywhere
+              // in the empty space still focuses this textarea and places a caret.
+              const naturalHeight = Math.max((item.endLine - item.startLine + 1) * lineHeight, lineHeight);
+              const segHeight = item.index === lastLinesIndex
+                ? Math.max(naturalHeight, availHeight - segStartRow * lineHeight)
+                : naturalHeight;
+              return (
+                <textarea
+                  key={`seg-${item.index}`}
+                  ref={el => { if (el) segEls.current.set(item.index, el); else segEls.current.delete(item.index); }}
+                  autoFocus={autoFocus && item.index === 0}
+                  value={segmentText(item.startLine, item.endLine)}
+                  onChange={e => handleSegmentChange(item.startLine, item.endLine, e.target)}
+                  onFocus={onFocusPane}
+                  onBlur={() => {
+                    // A re-diff can remount this textarea (the caret is
+                    // restored right after), which fires a transient blur.
+                    // Defer and only clear active-edit tracking if focus has
+                    // genuinely left every segment in this pane.
+                    requestAnimationFrame(() => {
+                      const active = typeof document !== 'undefined' ? document.activeElement : null;
+                      for (const el of segEls.current.values()) {
+                        if (el === active) return;
+                      }
+                      onBlurPane?.();
+                    });
+                  }}
+                  placeholder={layout.items.length === 1 ? `${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…` : undefined}
+                  spellCheck={false}
+                  wrap="off"
+                  style={{
+                    position: 'absolute', zIndex: 1,
+                    top: segStartRow * lineHeight,
+                    left: 0, right: 0,
+                    width: '100%',
+                    height: segHeight,
+                    padding: '0 12px',
+                    resize: 'none', outline: 'none', border: 'none',
+                    background: 'transparent',
+                    color: colors.text,
+                    caretColor: colors.accent,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                    fontSize: `${fontSize}px`,
+                    lineHeight: `${lineHeight}px`,
+                    tabSize: 2,
+                    whiteSpace: 'pre',
+                    overflow: 'hidden',
+                    display: 'block'
+                  }}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -509,7 +863,9 @@ function EditablePane(props: {
 // =============================================================================
 // ConnectorRibbon — IDEA-style middle strip. Draws a tinted trapezoid (or thin
 // line for pure insertions/deletions) between corresponding left/right hunk
-// regions, accounting for the current scroll positions of each pane.
+// regions, accounting for the current scroll positions of each pane. The wavy
+// fold seams are drawn separately by SeamOverlay (a single full-width path) so
+// they stay continuous across the pane/ribbon boundaries.
 // =============================================================================
 function ConnectorRibbon(props: {
   width: number;
@@ -521,10 +877,14 @@ function ConnectorRibbon(props: {
   rightScrollTop: number;
   colors: DiffColors;
   onHunkClick: (idx: number) => void;
+  /** Convert a document line to its display-row top on each side. */
+  leftRowOfLine: number[];
+  rightRowOfLine: number[];
 }) {
   const {
     width, height, hunks, currentHunkIdx, lineHeight,
-    leftScrollTop, rightScrollTop, colors, onHunkClick
+    leftScrollTop, rightScrollTop, colors, onHunkClick,
+    leftRowOfLine, rightRowOfLine
   } = props;
 
   const ribbonColor = (k: RowKind): string => {
@@ -547,11 +907,12 @@ function ConnectorRibbon(props: {
       style={{ display: 'block', position: 'absolute', inset: 0, pointerEvents: 'auto' }}
     >
       {hunks.map((h, idx) => {
-        // Y in local pane viewport coordinates (after subtracting scrollTop).
-        const lTop = h.leftFirst * lineHeight - leftScrollTop;
-        const lBot = (h.leftLast + 1) * lineHeight - leftScrollTop;
-        const rTop = h.rightFirst * lineHeight - rightScrollTop;
-        const rBot = (h.rightLast + 1) * lineHeight - rightScrollTop;
+        // Y in local pane viewport coordinates, in DISPLAY-ROW space (folded
+        // lines removed) after subtracting scrollTop.
+        const lTop = leftRowOfLine[h.leftFirst] * lineHeight - leftScrollTop;
+        const lBot = leftRowOfLine[h.leftLast + 1] * lineHeight - leftScrollTop;
+        const rTop = rightRowOfLine[h.rightFirst] * lineHeight - rightScrollTop;
+        const rBot = rightRowOfLine[h.rightLast + 1] * lineHeight - rightScrollTop;
 
         // Pure addition → left range is empty (leftLast < leftFirst).
         const leftEmpty = h.leftLast < h.leftFirst;
@@ -597,6 +958,96 @@ function ConnectorRibbon(props: {
   );
 }
 
+// =============================================================================
+// SeamOverlay — a SINGLE full-width overlay that draws the torn-seam wave for
+// every collapsed "unchanged" region. Each region's top and bottom edges are
+// drawn as ONE continuous path spanning left pane → ribbon gap → right pane,
+// with the sine phase anchored to the body's x=0. Because there is exactly one
+// path per edge (not one-per-pane-plus-one-in-the-ribbon, each with its own
+// phase origin), the wave never breaks at the pane/ribbon boundaries.
+//
+// The panes and ribbon render only the flat fold-strip *background*; this
+// overlay is the sole source of the wavy edges, so nothing can fall out of
+// phase with it.
+// =============================================================================
+function SeamOverlay(props: {
+  width: number;
+  height: number;
+  ribbonWidth: number;
+  lineHeight: number;
+  collapseRegions: CollapseRegion[];
+  leftRowOfLine: number[];
+  rightRowOfLine: number[];
+  leftScrollTop: number;
+  rightScrollTop: number;
+  colors: DiffColors;
+}) {
+  const {
+    width, height, ribbonWidth, lineHeight, collapseRegions,
+    leftRowOfLine, rightRowOfLine, leftScrollTop, rightScrollTop, colors
+  } = props;
+  if (width <= 0) return null;
+
+  // x-zones across the body: [0, paneW] left pane, [paneW, ribbonEnd] ribbon
+  // gap, [ribbonEnd, width] right pane.
+  const paneW = (width - ribbonWidth) / 2;
+  const ribbonEnd = paneW + ribbonWidth;
+  const period = 8;   // px per wave cycle (matches the old pane/ribbon waves)
+  const amp = 1.6;    // wave amplitude
+  const steps = Math.max(2, Math.round(width / 2));
+
+  // Baseline y at x: flat at the left value across the left pane, flat at the
+  // right value across the right pane, linearly interpolated across the ribbon.
+  const baseAt = (x: number, lv: number, rv: number): number => {
+    if (x <= paneW) return lv;
+    if (x >= ribbonEnd) return rv;
+    return lv + (rv - lv) * ((x - paneW) / ribbonWidth);
+  };
+  const waveY = (x: number, lv: number, rv: number): number =>
+    baseAt(x, lv, rv) + Math.sin((x / period) * Math.PI * 2) * amp;
+  const edgePath = (lv: number, rv: number): string => {
+    let d = '';
+    for (let i = 0; i <= steps; i++) {
+      const x = (i / steps) * width;
+      d += `${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${waveY(x, lv, rv).toFixed(2)} `;
+    }
+    return d;
+  };
+
+  return (
+    <svg width={width} height={height} style={{ display: 'block' }}>
+      {collapseRegions.map(r => {
+        const lTop = leftRowOfLine[r.leftStart] * lineHeight - leftScrollTop;
+        const rTop = rightRowOfLine[r.rightStart] * lineHeight - rightScrollTop;
+        const lBot = lTop + lineHeight;
+        const rBot = rTop + lineHeight;
+        if (Math.max(lBot, rBot) < -20 || Math.min(lTop, rTop) > height + 20) return null;
+
+        // Fill the ribbon-gap slice of the band so the fold reads as continuous
+        // colour across the gap (the panes fill their own slices). Sampled only
+        // within [paneW, ribbonEnd] so we never paint over pane text.
+        const gsteps = Math.max(2, Math.round(ribbonWidth / 2));
+        const top: string[] = [];
+        const bot: string[] = [];
+        for (let i = 0; i <= gsteps; i++) {
+          const x = paneW + (ribbonEnd - paneW) * (i / gsteps);
+          top.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${waveY(x, lTop, rTop).toFixed(2)}`);
+          bot.push(`L ${x.toFixed(2)} ${waveY(x, lBot, rBot).toFixed(2)}`);
+        }
+        const gapFill = `${top.join(' ')} ${[...bot].reverse().join(' ')} Z`;
+
+        return (
+          <g key={`seam-${r.id}`}>
+            <path d={gapFill} fill={colors.gutterBg} />
+            <path d={edgePath(lTop, rTop)} fill="none" stroke={colors.accent} strokeWidth={1} opacity={0.9} />
+            <path d={edgePath(lBot, rBot)} fill="none" stroke={colors.accent} strokeWidth={1} opacity={0.9} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onSaveNote, onClose }: Props) {
   // Layout constants used by scroll math and the panes.
   const lineHeight = Math.round(fontSize * 1.55);
@@ -623,15 +1074,29 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
+  // Collapse-unchanged-fragments state. `collapseOn` toggles the whole feature
+  // (default on, like IDEA). `expanded` holds region ids the user has manually
+  // opened back up.
+  const [collapseOn, setCollapseOn] = useState(true);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // The side + doc line the user is actively editing. Any collapse region
+  // spanning this line stays unfolded so an edit that makes the region match
+  // the other side doesn't collapse it out from under the cursor. Cleared
+  // when focus leaves the pane.
+  const [activeEdit, setActiveEdit] = useState<{ side: Side; line: number } | null>(null);
+
   // Scroll state used by both ribbon SVG and cross-pane sync.
   const [leftScrollTop, setLeftScrollTop] = useState(0);
   const [rightScrollTop, setRightScrollTop] = useState(0);
   const [ribbonHeight, setRibbonHeight] = useState(0);
+  // Full body width — the single full-width seam overlay uses it to place its
+  // per-pane and ribbon-gap segments so the fold edge reads as one line.
+  const [bodyWidth, setBodyWidth] = useState(0);
 
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
-  const leftTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const rightTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const leftApiRef = useRef<PaneHandle | null>(null);
+  const rightApiRef = useRef<PaneHandle | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef<Side | null>(null);
 
@@ -662,6 +1127,50 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     if (rightText === '') b.length = 0;
     return buildHunks(computeDiff(a, b), a.length, b.length);
   }, [leftText, rightText]);
+
+  const leftTotalLines = leftText === '' ? 0 : leftText.split('\n').length;
+  const rightTotalLines = rightText === '' ? 0 : rightText.split('\n').length;
+
+  // Foldable equal regions, minus any the user has expanded (or all, when the
+  // collapse toggle is off).
+  const collapseRegions = useMemo(() => {
+    if (!collapseOn) return [];
+    const all = computeCollapseRegions(hunks, leftTotalLines, rightTotalLines);
+    return all.filter(r => {
+      if (expanded.has(r.id)) return false;
+      // Keep the region the user is currently editing unfolded.
+      if (activeEdit) {
+        const s = activeEdit.side === 'left' ? r.leftStart : r.rightStart;
+        const e = activeEdit.side === 'left' ? r.leftEnd : r.rightEnd;
+        if (activeEdit.line >= s && activeEdit.line <= e) return false;
+      }
+      return true;
+    });
+  }, [collapseOn, hunks, leftTotalLines, rightTotalLines, expanded, activeEdit]);
+
+  const leftLayout = useMemo(
+    () => buildSideLayout('left', leftTotalLines, collapseRegions),
+    [leftTotalLines, collapseRegions]
+  );
+  const rightLayout = useMemo(
+    () => buildSideLayout('right', rightTotalLines, collapseRegions),
+    [rightTotalLines, collapseRegions]
+  );
+
+  // Total foldable regions available (ignoring current expand state) — used to
+  // decide whether to show the "expand all" affordance.
+  const foldableCount = useMemo(
+    () => computeCollapseRegions(hunks, leftTotalLines, rightTotalLines).length,
+    [hunks, leftTotalLines, rightTotalLines]
+  );
+
+  const expandRegion = useCallback((id: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setCurrentHunkIdx(hunks.length > 0 ? 0 : -1);
@@ -694,29 +1203,32 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   }, [rightMatches.length]);
 
   // Scroll a pane so the given match is comfortably in view and select its
-  // range in the textarea for a native highlight.
+  // range via the pane's segment-aware handle. If the match sits inside a
+  // folded region, expand that region first so it becomes reachable.
   const revealMatch = useCallback((side: Side, m: Match | undefined) => {
     if (!m) return;
+    const layout = side === 'left' ? leftLayout : rightLayout;
+    const startLine = side === 'left' ? 'leftStart' : 'rightStart';
+    const endLine = side === 'left' ? 'leftEnd' : 'rightEnd';
+    // Is the match line currently folded? (Its display row is a strip row.)
+    const row = layout.rowOfLine[m.line];
+    const hidden = layout.lineOfRow[row] !== m.line;
+    if (hidden) {
+      const region = collapseRegions.find(r => m.line >= (r as any)[startLine] && m.line <= (r as any)[endLine]);
+      if (region) { expandRegion(region.id); return; } // re-run after layout updates
+    }
     const paneRef = side === 'left' ? leftPaneRef : rightPaneRef;
-    const taRef = side === 'left' ? leftTextareaRef : rightTextareaRef;
-    const text = side === 'left' ? leftText : rightText;
+    const api = side === 'left' ? leftApiRef : rightApiRef;
     requestAnimationFrame(() => {
       const pane = paneRef.current;
       if (pane) {
-        const y = m.line * lineHeight;
+        const y = layout.rowOfLine[m.line] * lineHeight;
         const top = Math.max(0, y - pane.clientHeight / 3);
         pane.scrollTo({ top, behavior: 'smooth' });
       }
-      const ta = taRef.current;
-      if (ta) {
-        const lines = text.split('\n');
-        let offset = 0;
-        for (let i = 0; i < m.line && i < lines.length; i++) offset += lines[i].length + 1;
-        ta.focus({ preventScroll: true });
-        ta.setSelectionRange(offset + m.start, offset + m.end);
-      }
+      api.current?.focusRange(m.line, m.start, m.end);
     });
-  }, [leftText, rightText, lineHeight]);
+  }, [leftLayout, rightLayout, collapseRegions, expandRegion, lineHeight]);
 
   // Move to prev/next match on a side (wraps around).
   const stepMatch = useCallback((side: Side, dir: 1 | -1) => {
@@ -758,7 +1270,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
-    const update = () => setRibbonHeight(el.clientHeight - 36 /* toolbar */);
+    const update = () => {
+      setRibbonHeight(el.clientHeight - 36 /* toolbar */);
+      setBodyWidth(el.clientWidth);
+    };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
@@ -819,9 +1334,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       } else if (scrollTop <= 1) {
         target = 0;
       } else {
-        const fromLine = scrollTop / lineHeight;
+        // scrollTop is in display-row space. Convert to a document line on the
+        // source side, map that through the hunks, then convert the result to
+        // the OTHER side's display-row space. Fractional part is preserved so
+        // scrolling stays smooth inside a segment.
+        const fromLayout = fromSide === 'left' ? leftLayout : rightLayout;
+        const otherLayout = fromSide === 'left' ? rightLayout : leftLayout;
+        const fromRow = scrollTop / lineHeight;
+        const rowInt = Math.floor(fromRow);
+        const frac = fromRow - rowInt;
+        const fromLine = (fromLayout.lineOfRow[rowInt] ?? rowInt) + frac;
         const toLine = mapLineToOther(fromLine, fromSide);
-        target = Math.max(0, Math.min(otherMax, toLine * lineHeight));
+        const toInt = Math.floor(toLine);
+        const toFrac = toLine - toInt;
+        const otherRow = (otherLayout.rowOfLine[toInt] ?? toInt) + toFrac;
+        target = Math.max(0, Math.min(otherMax, otherRow * lineHeight));
       }
 
       if (Math.abs(otherRef.current.scrollTop - target) > 1) {
@@ -839,40 +1366,31 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       }
     }
     requestAnimationFrame(() => { syncingScrollRef.current = null; });
-  }, [lineHeight, mapLineToOther]);
+  }, [lineHeight, mapLineToOther, leftLayout, rightLayout]);
 
   const scrollToHunk = useCallback((idx: number) => {
     if (idx < 0 || idx >= hunks.length) return;
     const h = hunks[idx];
     requestAnimationFrame(() => {
-      const lLine = h.leftFirst;
-      const rLine = h.rightFirst;
+      // Hunk edges are never folded (folding keeps CONTEXT lines around each
+      // change), so map to display rows directly.
+      const lRow = leftLayout.rowOfLine[h.leftFirst] ?? h.leftFirst;
+      const rRow = rightLayout.rowOfLine[h.rightFirst] ?? h.rightFirst;
       if (leftPaneRef.current) {
-        const target = Math.max(0, lLine * lineHeight - leftPaneRef.current.clientHeight / 3);
+        const target = Math.max(0, lRow * lineHeight - leftPaneRef.current.clientHeight / 3);
         leftPaneRef.current.scrollTo({ top: target, behavior: 'smooth' });
       }
       if (rightPaneRef.current) {
-        const target = Math.max(0, rLine * lineHeight - rightPaneRef.current.clientHeight / 3);
+        const target = Math.max(0, rRow * lineHeight - rightPaneRef.current.clientHeight / 3);
         rightPaneRef.current.scrollTo({ top: target, behavior: 'smooth' });
       }
       // Move the caret to the start of the corresponding line on the RIGHT
       // pane so the user can start editing the diff target immediately.
-      const ta = rightTextareaRef.current;
-      if (ta) {
-        // Pure additions/removals: if right side is empty for this hunk, use
-        // rightFirst as the insertion line (it equals rightLast+1). Otherwise
-        // jump to the start of the first changed line on the right.
-        const lines = rightText.split('\n');
-        const targetLine = Math.min(Math.max(0, rLine), Math.max(0, lines.length - 1));
-        let offset = 0;
-        for (let i = 0; i < targetLine; i++) {
-          offset += lines[i].length + 1; // +1 for the newline
-        }
-        ta.focus({ preventScroll: true });
-        ta.setSelectionRange(offset, offset);
-      }
+      const lines = rightText.split('\n');
+      const targetLine = Math.min(Math.max(0, h.rightFirst), Math.max(0, lines.length - 1));
+      rightApiRef.current?.focusRange(targetLine, 0, 0);
     });
-  }, [hunks, lineHeight, rightText]);
+  }, [hunks, lineHeight, rightText, leftLayout, rightLayout]);
 
   const goPrevDiff = useCallback(() => {
     if (hunks.length === 0) return;
@@ -1300,6 +1818,36 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           color: ${colors.removeStrong}; border-color: ${colors.removeStrong};
           background: rgba(239, 68, 68, 0.08);
         }
+        .dv-toggle-btn {
+          height: 30px; padding: 0 11px; border-radius: 7px;
+          border: 1px solid ${colors.border}; background: transparent;
+          color: ${colors.textSec}; font-size: 12px; font-weight: 700;
+          cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+          transition: all 0.15s; outline: none; white-space: nowrap;
+        }
+        .dv-toggle-btn:hover {
+          color: ${colors.text}; border-color: ${colors.borderStrong};
+          background: ${theme === 'dark' ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)'};
+        }
+        .dv-toggle-btn.active {
+          color: ${colors.accent}; border-color: ${colors.accent};
+          background: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.10)' : 'rgba(59, 130, 246, 0.06)'};
+        }
+        /* Collapsed-fragment strip inside a pane's text column. The wavy
+           top/bottom edges are drawn by the full-width SeamOverlay, so this
+           only carries the flat fill + hover. */
+        .dv-fold-strip {
+          cursor: pointer;
+          color: ${colors.textSec};
+          background-color: ${theme === 'dark' ? 'rgba(148, 163, 184, 0.07)' : 'rgba(15, 23, 42, 0.04)'};
+          font-weight: 700;
+          user-select: none;
+          transition: background-color 0.12s, color 0.12s;
+        }
+        .dv-fold-strip:hover {
+          color: ${colors.accent};
+          background-color: ${theme === 'dark' ? 'rgba(96, 165, 250, 0.12)' : 'rgba(59, 130, 246, 0.08)'};
+        }
         .dv-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
         .dv-scroll::-webkit-scrollbar-track { background: transparent; }
         .dv-scroll::-webkit-scrollbar-thumb { background: ${theme === 'dark' ? '#334155' : '#cbd5e1'}; border-radius: 10px; border: 2px solid ${colors.bg}; }
@@ -1475,6 +2023,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
 
+          <button
+            className={`dv-toggle-btn${collapseOn ? ' active' : ''}`}
+            onClick={() => { setCollapseOn(v => !v); setExpanded(new Set()); }}
+            disabled={foldableCount === 0}
+            style={foldableCount === 0 ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
+            title="Collapse unchanged fragments"
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 14 10 14 10 20"></polyline>
+              <polyline points="20 10 14 10 14 4"></polyline>
+              <line x1="14" y1="10" x2="21" y2="3"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
+            {collapseOn ? 'Unchanged: collapsed' : 'Unchanged: shown'}
+          </button>
+
+          <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
+
           <button className="dv-icon-btn" onClick={onClose} title="Close (Esc)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -1491,11 +2057,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           text={leftText}
           onChange={v => handleTextChange('left', v)}
           hunks={hunks}
+          layout={leftLayout}
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
           paneRef={leftPaneRef}
-          textareaRef={leftTextareaRef}
+          apiRef={leftApiRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('left')}
@@ -1504,6 +2071,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           currentMatchIdx={leftSearch.currentIdx}
           onFocusPane={() => setFocusedSide('left')}
           findBar={findBar('left')}
+          onExpandRegion={expandRegion}
+          onActiveLine={line => setActiveEdit({ side: 'left', line })}
+          onBlurPane={() => setActiveEdit(a => (a?.side === 'left' ? null : a))}
         />
 
         {/* Connector ribbon column */}
@@ -1528,6 +2098,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               rightScrollTop={rightScrollTop}
               colors={colors}
               onHunkClick={idx => { setCurrentHunkIdx(idx); scrollToHunk(idx); }}
+              leftRowOfLine={leftLayout.rowOfLine}
+              rightRowOfLine={rightLayout.rowOfLine}
             />
           </div>
         </div>
@@ -1537,11 +2109,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           text={rightText}
           onChange={v => handleTextChange('right', v)}
           hunks={hunks}
+          layout={rightLayout}
           lineHeight={lineHeight}
           fontSize={fontSize}
           colors={colors}
           paneRef={rightPaneRef}
-          textareaRef={rightTextareaRef}
+          apiRef={rightApiRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
           toolbar={editToolbar('right')}
@@ -1550,8 +2123,34 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           currentMatchIdx={rightSearch.currentIdx}
           onFocusPane={() => setFocusedSide('right')}
           findBar={findBar('right')}
+          onExpandRegion={expandRegion}
+          onActiveLine={line => setActiveEdit({ side: 'right', line })}
+          onBlurPane={() => setActiveEdit(a => (a?.side === 'right' ? null : a))}
           autoFocus
         />
+
+        {/* Fold-seam overlay — one full-width layer drawing every collapsed
+            region's wavy top/bottom edge as a single continuous path across
+            both panes and the ribbon gap. Sits below the toolbars (top: 36)
+            and is click-through so it never blocks the panes or ribbon. */}
+        <div style={{
+          position: 'absolute',
+          top: 36, left: 0, right: 0, bottom: 0,
+          pointerEvents: 'none', zIndex: 4, overflow: 'hidden'
+        }}>
+          <SeamOverlay
+            width={bodyWidth}
+            height={ribbonHeight}
+            ribbonWidth={ribbonWidth}
+            lineHeight={lineHeight}
+            collapseRegions={collapseRegions}
+            leftRowOfLine={leftLayout.rowOfLine}
+            rightRowOfLine={rightLayout.rowOfLine}
+            leftScrollTop={leftScrollTop}
+            rightScrollTop={rightScrollTop}
+            colors={colors}
+          />
+        </div>
 
         {/* Picker overlay */}
         {pickerSide && (

@@ -6,6 +6,7 @@ import { java } from '@codemirror/lang-java';
 import { sql } from '@codemirror/lang-sql';
 import { python } from '@codemirror/lang-python';
 import { markdown } from '@codemirror/lang-markdown';
+import { format as formatSql } from 'sql-formatter';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { githubLight } from '@uiw/codemirror-theme-github';
 import { EditorView, keymap, Decoration, DecorationSet } from '@codemirror/view';
@@ -222,10 +223,11 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   // Fold gutter + keymap shared by every language so all file types stay foldable.
   const sharedFoldingExt = useMemo<Extension[]>(() => [
     foldGutter({
-      markerDOM: (folded) => {
+      markerDOM: (open) => {
         const el = document.createElement('span');
         el.className = 'cm-json-fold-marker';
-        el.textContent = folded ? '▸' : '▾';
+        // `open` is true when the region is expanded → down arrow; false when folded → right arrow
+        el.textContent = open ? '▾' : '▸';
         return el;
       }
     }),
@@ -255,13 +257,21 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
 
   const handleFormat = () => {
     if (currentLanguage === 'json') {
-      try { 
-        onChange(JSON.stringify(JSON.parse(value), null, 2)); 
-      } catch(e) { 
-        showAlert?.({ type: 'error', message: 'Invalid JSON' }); 
+      try {
+        onChange(JSON.stringify(JSON.parse(value), null, 2));
+      } catch(e) {
+        showAlert?.({ type: 'error', message: 'Invalid JSON' });
+      }
+    } else if (currentLanguage === 'sql') {
+      try {
+        onChange(formatSql(value, { language: 'sql', tabWidth: 2, keywordCase: 'upper' }));
+      } catch(e) {
+        showAlert?.({ type: 'error', message: 'Invalid SQL' });
       }
     }
   };
+
+  const canFormat = currentLanguage === 'json' || currentLanguage === 'sql';
 
   const closeSearch = useCallback(() => {
     setShowSearch(false);
@@ -770,7 +780,9 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
           border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'}`,
           boxShadow: '0 8px 32px rgba(0,0,0,0.25)'
         }}>
-          <button className="ed-btn" style={btnStyle} onClick={handleFormat} title="Format JSON"><Icons.Format /></button>
+          {canFormat && (
+            <button className="ed-btn" style={btnStyle} onClick={handleFormat} title={`Format ${currentLanguage.toUpperCase()}`}><Icons.Format /></button>
+          )}
           <button className="ed-btn" style={btnStyle} onClick={handleCopy} title="Copy All"><Icons.Copy /></button>
           <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title="Toggle Wrap"><Icons.Wrap /></button>
           {allNotes && allNotes.length > 0 && (

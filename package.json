@@ -1,6 +1,6 @@
 {
   "name": "plex-code-editor-chrome-extension",
-  "version": "4.0.1",
+  "version": "4.0.3",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,8 @@
     "@uiw/codemirror-theme-vscode": "^4.25.1",
     "@uiw/react-codemirror": "^4.24.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "sql-formatter": "^15.8.2"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.244",
