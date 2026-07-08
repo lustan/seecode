@@ -35,6 +35,16 @@ type SearchState = {
 
 const EMPTY_SEARCH: SearchState = { open: false, query: '', caseSensitive: false, currentIdx: -1 };
 
+// Normalize bulk-entered text (paste / file load / note load) so the two panes
+// compare cleanly: convert CRLF/CR to LF and drop trailing blank lines. Without
+// this, pasting content whose clipboard carries a trailing newline renders a
+// phantom empty last line on that side — showing "one extra line" against an
+// otherwise-identical other side. Per-keystroke edits skip this so intentional
+// blank lines while typing are preserved.
+function normalizeBulkText(text: string): string {
+  return text.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+}
+
 // Find every occurrence of `query` in `text`, returned per-line so the
 // highlight overlay can position each rect. Plain substring search (not regex)
 // to stay predictable; non-overlapping matches.
@@ -814,6 +824,25 @@ function EditablePane(props: {
                   autoFocus={autoFocus && item.index === 0}
                   value={segmentText(item.startLine, item.endLine)}
                   onChange={e => handleSegmentChange(item.startLine, item.endLine, e.target)}
+                  onPaste={e => {
+                    // Normalize pasted clipboard text (CRLF/CR → LF) and, when
+                    // pasting at the very end of the pane, drop a trailing
+                    // newline so identical content doesn't render a phantom
+                    // extra last line. Manual typing is untouched.
+                    const raw = e.clipboardData.getData('text');
+                    if (!/\r/.test(raw) && !/\n$/.test(raw)) return;
+                    const el = e.currentTarget;
+                    let clean = raw.replace(/\r\n?/g, '\n');
+                    const atEnd = el.selectionEnd === el.value.length;
+                    if (atEnd) clean = clean.replace(/\n+$/, '');
+                    e.preventDefault();
+                    const start = el.selectionStart;
+                    const next = el.value.slice(0, start) + clean + el.value.slice(el.selectionEnd);
+                    el.value = next;
+                    const caret = start + clean.length;
+                    el.setSelectionRange(caret, caret);
+                    handleSegmentChange(item.startLine, item.endLine, el);
+                  }}
                   onFocus={onFocusPane}
                   onBlur={() => {
                     // A re-diff can remount this textarea (the caret is
@@ -1057,7 +1086,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   );
   const [rightSrc, setRightSrc] = useState<PaneSource>({ kind: 'blank' });
 
-  const [leftText, setLeftText] = useState<string>(currentNote?.content || '');
+  const [leftText, setLeftText] = useState<string>(normalizeBulkText(currentNote?.content || ''));
   const [rightText, setRightText] = useState<string>('');
 
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
@@ -1075,9 +1104,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
 
   // Collapse-unchanged-fragments state. `collapseOn` toggles the whole feature
-  // (default on, like IDEA). `expanded` holds region ids the user has manually
-  // opened back up.
-  const [collapseOn, setCollapseOn] = useState(true);
+  // (default OFF — unchanged lines are shown until the user opts in). `expanded`
+  // holds region ids the user has manually opened back up.
+  const [collapseOn, setCollapseOn] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // The side + doc line the user is actively editing. Any collapse region
   // spanning this line stays unfolded so an edit that makes the region match
@@ -1133,19 +1162,18 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   // Foldable equal regions, minus any the user has expanded (or all, when the
   // collapse toggle is off).
+  // Snapshot of the fold layout captured whenever the pane is NOT being edited.
+  // While `activeEdit` is set we return this frozen list unchanged so typing
+  // never folds or unfolds a region under the user (fold ids are position-based
+  // and would otherwise drift as lines shift). Recomputed on blur.
+  const frozenRegionsRef = useRef<CollapseRegion[]>([]);
   const collapseRegions = useMemo(() => {
-    if (!collapseOn) return [];
+    if (!collapseOn) { frozenRegionsRef.current = []; return []; }
+    if (activeEdit) return frozenRegionsRef.current;
     const all = computeCollapseRegions(hunks, leftTotalLines, rightTotalLines);
-    return all.filter(r => {
-      if (expanded.has(r.id)) return false;
-      // Keep the region the user is currently editing unfolded.
-      if (activeEdit) {
-        const s = activeEdit.side === 'left' ? r.leftStart : r.rightStart;
-        const e = activeEdit.side === 'left' ? r.leftEnd : r.rightEnd;
-        if (activeEdit.line >= s && activeEdit.line <= e) return false;
-      }
-      return true;
-    });
+    const next = all.filter(r => !expanded.has(r.id));
+    frozenRegionsRef.current = next;
+    return next;
   }, [collapseOn, hunks, leftTotalLines, rightTotalLines, expanded, activeEdit]);
 
   const leftLayout = useMemo(
@@ -1517,12 +1545,13 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   }, [candidates, pickerSearch]);
 
   const applyPick = (side: Side, pick: PaneSource, text: string) => {
+    const norm = normalizeBulkText(text);
     if (side === 'left') {
       setLeftSrc(pick);
-      setLeftText(text);
+      setLeftText(norm);
     } else {
       setRightSrc(pick);
-      setRightText(text);
+      setRightText(norm);
     }
     setPickerSide(null);
     setPickerSearch('');
@@ -2031,12 +2060,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             title="Collapse unchanged fragments"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 14 10 14 10 20"></polyline>
-              <polyline points="20 10 14 10 14 4"></polyline>
-              <line x1="14" y1="10" x2="21" y2="3"></line>
-              <line x1="3" y1="21" x2="10" y2="14"></line>
+              <polyline points="7 4 12 9 17 4"></polyline>
+              <polyline points="7 20 12 15 17 20"></polyline>
             </svg>
-            {collapseOn ? 'Unchanged: collapsed' : 'Unchanged: shown'}
+            Collapse unchanged
           </button>
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />

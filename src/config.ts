@@ -7,5 +7,5 @@ export const CONFIG = {
   
   // Other configurable options can be added here
   APP_NAME: 'Seecode',
-  VERSION: '3.0.1'
+  VERSION: '4.0.4'
 };
