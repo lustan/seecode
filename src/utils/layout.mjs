@@ -1,3 +1,3 @@
 export function getSidebarWidth(isPopup) {
-  return isPopup ? 140 : 198;
+  return isPopup ? 160 : 198;
 }
