@@ -309,8 +309,8 @@ type DiffColors = {
   searchMatch: string;
   searchCurrent: string;
   searchCurrentBorder: string;
-  inlineRemove: string;
-  inlineAdd: string;
+  /** Deeper shade over a modified line, used for its exact changed chars. */
+  inlineModify: string;
 };
 
 // Imperative handle a pane exposes so the parent can focus a specific document
@@ -365,7 +365,6 @@ function EditablePane(props: {
     currentHunkIdx, toolbar, autoFocus, bottomPadding,
     matches, inlineRanges, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
   } = props;
-
   const numColWidth = 50;
   const gutterFontSize = Math.max(10, fontSize - 2);
   const textPadding = 24; // 12px left + 12px right on the textarea
@@ -568,26 +567,26 @@ function EditablePane(props: {
       });
   }, [matches, currentMatchIdx, text, fontSize, lineHeight, rowOfLine, isHidden]);
 
-  // IDEA-style character highlights within modified lines. This deliberately
-  // uses the same canvas metrics and padding as search highlights/text width.
-  const inlineRects = useMemo(() => {
-    if (inlineRanges.length === 0 || typeof document === 'undefined') return [];
-    const canvas = measureCanvasRef.current || document.createElement('canvas');
-    measureCanvasRef.current = canvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return [];
-    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  // Lines that need an inline-diff mirror. Unlike canvas width measurements,
+  // this lets the browser lay out the same text with the same CSS as textarea,
+  // so CJK/font fallback, punctuation, tabs, zoom and fractional pixels align.
+  const inlineMirrorLines = useMemo(() => {
+    const byLine = new Map<number, InlineRange[]>();
+    for (const range of inlineRanges) {
+      if (range.end <= range.start || isHidden(range.line)) continue;
+      const list = byLine.get(range.line) ?? [];
+      list.push(range);
+      byLine.set(range.line, list);
+    }
     const lines = text.split('\n');
-    const expand = (s: string) => (s.indexOf('\t') >= 0 ? s.replace(/\t/g, '  ') : s);
-    return inlineRanges
-      .filter(r => !isHidden(r.line) && r.end > r.start)
-      .map(r => {
-        const raw = lines[r.line] ?? '';
-        const x = 12 + ctx.measureText(expand(raw.slice(0, r.start))).width;
-        const w = Math.max(1, ctx.measureText(expand(raw.slice(r.start, r.end))).width);
-        return { x, w, top: rowOfLine[r.line] * lineHeight };
-      });
-  }, [inlineRanges, text, fontSize, lineHeight, rowOfLine, isHidden]);
+    return [...byLine.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([line, ranges]) => ({
+        line,
+        text: lines[line] ?? '',
+        ranges: ranges.sort((a, b) => a.start - b.start)
+      }));
+  }, [inlineRanges, text, isHidden]);
 
   // Per-line kind, indexed by 0-based line in THIS side.
   const lineKinds = useMemo<RowKind[]>(() => {
@@ -633,23 +632,6 @@ function EditablePane(props: {
     return colors.gutterText;
   };
 
-  // Hunks where THIS side is empty — i.e. pure deletions on the right pane,
-  // pure additions on the left pane. We mark the collapse point with a thin
-  // colored horizontal line so the user can see WHERE the missing block lives
-  // relative to the other side.
-  const collapseMarkers = useMemo(() => {
-    const out: { y: number; color: string }[] = [];
-    for (const h of hunks) {
-      if (side === 'left' && h.kind === 'add') {
-        // left collapses → mark at h.leftFirst (= h.leftLast+1 since empty)
-        out.push({ y: rowOfLine[h.leftFirst] * lineHeight, color: colors.addStrong });
-      } else if (side === 'right' && h.kind === 'remove') {
-        out.push({ y: rowOfLine[h.rightFirst] * lineHeight, color: colors.removeStrong });
-      }
-    }
-    return out;
-  }, [hunks, side, lineHeight, rowOfLine, colors.addStrong, colors.removeStrong]);
-
   // currentHunkIdx is currently unreferenced — silence unused warnings.
   void currentHunkIdx;
 
@@ -677,29 +659,6 @@ function EditablePane(props: {
           display: 'flex',
           flexDirection: side === 'left' ? 'row-reverse' : 'row'
         }}>
-          {/* Collapse markers — a thin colored line at the y-position where
-              the OPPOSITE side has a block that this side doesn't. Rendered
-              at the pane level (not inside the text-area column) so it spans
-              BOTH the line-number gutter and the text area, visually fusing
-              with the SVG ribbon in the middle strip. */}
-          <div style={{
-            position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2
-          }}>
-            {collapseMarkers.map((m, i) => (
-              <div
-                key={`cm-${i}`}
-                style={{
-                  position: 'absolute',
-                  top: m.y - 1,
-                  left: 0, right: 0,
-                  height: 2,
-                  background: m.color,
-                  opacity: 0.85
-                }}
-              />
-            ))}
-          </div>
-
           {/* Line number column — sits on the INNER side of each pane so the
               two number columns end up next to the center ribbon. Sticky on
               the inner edge so numbers stay visible during horizontal scroll.
@@ -785,22 +744,46 @@ function EditablePane(props: {
                 return bands;
               })}
             </div>
-            {/* Deeper red/green blocks pinpoint the changed characters inside
-                a modified line, while the existing band continues to identify
-                the line as a whole. */}
-            {inlineRects.length > 0 && (
+            {/* Browser-laid-out transparent text mirror. Only changed spans
+                paint a deeper yellow background; the real textarea text stays
+                on top. This avoids accumulated canvas measurement drift. */}
+            {inlineMirrorLines.length > 0 && (
               <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1 }}>
-                {inlineRects.map((r, i) => (
-                  <div
-                    key={`id-${i}`}
-                    style={{
-                      position: 'absolute', top: r.top, left: r.x,
-                      width: r.w, height: lineHeight,
-                      background: side === 'left' ? colors.inlineRemove : colors.inlineAdd,
-                      borderRadius: 2
-                    }}
-                  />
-                ))}
+                {inlineMirrorLines.map(({ line, text: raw, ranges }) => {
+                  const parts: React.ReactNode[] = [];
+                  let cursor = 0;
+                  ranges.forEach((range, i) => {
+                    if (range.start > cursor) parts.push(raw.slice(cursor, range.start));
+                    parts.push(
+                      <span key={`changed-${i}`} style={{ background: colors.inlineModify }}>
+                        {raw.slice(range.start, range.end)}
+                      </span>
+                    );
+                    cursor = Math.max(cursor, range.end);
+                  });
+                  if (cursor < raw.length) parts.push(raw.slice(cursor));
+                  return (
+                    <div
+                      key={`inline-line-${line}`}
+                      style={{
+                        position: 'absolute',
+                        top: rowOfLine[line] * lineHeight,
+                        left: 0, right: 0,
+                        height: lineHeight,
+                        padding: '0 12px',
+                        color: 'transparent',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                        fontSize: `${fontSize}px`,
+                        lineHeight: `${lineHeight}px`,
+                        tabSize: 2,
+                        whiteSpace: 'pre',
+                        overflow: 'hidden'
+                      }}
+                    >
+                      {parts}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {/* Search-match highlight overlay — sits above the color bands but
@@ -960,20 +943,15 @@ function ConnectorRibbon(props: {
     leftScrollTop, rightScrollTop, colors, onHunkClick,
     leftRowOfLine, rightRowOfLine
   } = props;
+  // Navigation state is retained by the parent; connector colors stay uniform.
+  void currentHunkIdx;
 
   const ribbonColor = (k: RowKind): string => {
-    if (k === 'modify') return colors.modifyRibbon;
-    if (k === 'remove') return colors.removeRibbon;
-    if (k === 'add') return colors.addRibbon;
+    if (k === 'modify') return colors.modifyBg;
+    if (k === 'remove') return colors.removeBg;
+    if (k === 'add') return colors.addBg;
     return 'transparent';
   };
-  const strokeColor = (k: RowKind): string => {
-    if (k === 'modify') return colors.modifyStrong;
-    if (k === 'remove') return colors.removeStrong;
-    if (k === 'add') return colors.addStrong;
-    return colors.border;
-  };
-
   return (
     <svg
       width={width}
@@ -1001,10 +979,10 @@ function ConnectorRibbon(props: {
         const maxY = Math.max(lBotUse, rBotUse);
         if (maxY < -20 || minY > height + 20) return null;
 
-        const fill = ribbonColor(h.kind);
-        const stroke = strokeColor(h.kind);
-        const isCurrent = idx === currentHunkIdx;
-
+        // Pure add/remove geometry is visibly painted once by the full-width
+        // PureChangeOverlay. Keep its transparent path here as the ribbon's
+        // click target so navigation behaviour is unchanged.
+        const fill = h.kind === 'modify' ? ribbonColor(h.kind) : 'transparent';
         // Build a smooth bezier-bounded trapezoid.
         // Top edge: left(lTop) → right(rTop)
         // Bottom edge: right(rBot) → left(lBot)
@@ -1023,8 +1001,82 @@ function ConnectorRibbon(props: {
               d={path}
               fill={fill}
               stroke="none"
-              opacity={isCurrent ? 1 : 0.75}
+              opacity={1}
+              pointerEvents="all"
             />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// =============================================================================
+// PureChangeOverlay — draws each pure insertion/deletion as one continuous
+// full-width SVG shape. The empty-side marker and the tapered ribbon therefore
+// share the exact same endpoint, stroke and coordinate system, avoiding the
+// seams caused by separate pane divs + ribbon SVG paths.
+// =============================================================================
+function PureChangeOverlay(props: {
+  width: number;
+  height: number;
+  ribbonWidth: number;
+  lineHeight: number;
+  hunks: Hunk[];
+  leftRowOfLine: number[];
+  rightRowOfLine: number[];
+  leftScrollTop: number;
+  rightScrollTop: number;
+  colors: DiffColors;
+}) {
+  const {
+    width, height, ribbonWidth, lineHeight, hunks,
+    leftRowOfLine, rightRowOfLine, leftScrollTop, rightScrollTop, colors
+  } = props;
+  if (width <= 0) return null;
+
+  const paneWidth = (width - ribbonWidth) / 2;
+  const ribbonEnd = paneWidth + ribbonWidth;
+  const cpOffset = ribbonWidth * 0.4;
+
+  return (
+    <svg width={width} height={height} style={{ display: 'block', position: 'absolute', inset: 0 }}>
+      {hunks.map((h, idx) => {
+        if (h.kind === 'modify') return null;
+
+        const lTop = leftRowOfLine[h.leftFirst] * lineHeight - leftScrollTop;
+        const lBot = leftRowOfLine[h.leftLast + 1] * lineHeight - leftScrollTop;
+        const rTop = rightRowOfLine[h.rightFirst] * lineHeight - rightScrollTop;
+        const rBot = rightRowOfLine[h.rightLast + 1] * lineHeight - rightScrollTop;
+        if (Math.max(lBot, rBot) < -20 || Math.min(lTop, rTop) > height + 20) return null;
+
+        if (h.kind === 'add') {
+          // The left side is empty: its full-width marker and the green wedge
+          // are a single group with a shared point at (paneWidth, lTop).
+          const wedge =
+            `M ${paneWidth - 1} ${lTop} ` +
+            `C ${paneWidth + cpOffset} ${lTop}, ${ribbonEnd - cpOffset} ${rTop}, ${ribbonEnd + 1} ${rTop} ` +
+            `L ${ribbonEnd + 1} ${rBot} ` +
+            `C ${ribbonEnd - cpOffset} ${rBot}, ${paneWidth + cpOffset} ${lTop}, ${paneWidth - 1} ${lTop} Z`;
+          return (
+            <g key={`pure-${idx}`}>
+              <path d={wedge} fill={colors.addBg} />
+              <path d={`M 0 ${lTop} L ${paneWidth} ${lTop}`} fill="none" stroke={colors.addStrong} strokeWidth={1} opacity={0.9} />
+            </g>
+          );
+        }
+
+        // The right side is empty: mirror the deletion wedge and continue its
+        // point as one red marker all the way across the empty pane.
+        const wedge =
+          `M ${paneWidth - 1} ${lTop} ` +
+          `L ${paneWidth - 1} ${lBot} ` +
+          `C ${paneWidth + cpOffset} ${lBot}, ${ribbonEnd - cpOffset} ${rTop}, ${ribbonEnd + 1} ${rTop} ` +
+          `C ${ribbonEnd - cpOffset} ${rTop}, ${paneWidth + cpOffset} ${lTop}, ${paneWidth - 1} ${lTop} Z`;
+        return (
+          <g key={`pure-${idx}`}>
+            <path d={wedge} fill={colors.removeBg} />
+            <path d={`M ${ribbonEnd} ${rTop} L ${width} ${rTop}`} fill="none" stroke={colors.removeStrong} strokeWidth={1} opacity={0.9} />
           </g>
         );
       })}
@@ -1089,7 +1141,7 @@ function SeamOverlay(props: {
   };
 
   return (
-    <svg width={width} height={height} style={{ display: 'block' }}>
+    <svg width={width} height={height} style={{ display: 'block', position: 'absolute', inset: 0 }}>
       {collapseRegions.map(r => {
         const lTop = leftRowOfLine[r.leftStart] * lineHeight - leftScrollTop;
         const rTop = rightRowOfLine[r.rightStart] * lineHeight - rightScrollTop;
@@ -1534,16 +1586,16 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     textDim: '#64748b',
     gutterBg: '#0a0c12',
     gutterText: '#475569',
-    removeBg: 'rgba(239, 68, 68, 0.16)',
-    removeGutter: 'rgba(239, 68, 68, 0.24)',
+    removeBg: '#32191d',
+    removeGutter: '#32191d',
     removeStrong: '#ef4444',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
-    addBg: 'rgba(34, 197, 94, 0.16)',
-    addGutter: 'rgba(34, 197, 94, 0.24)',
+    addBg: '#142a1c',
+    addGutter: '#142a1c',
     addStrong: '#22c55e',
     addRibbon: 'rgba(34, 197, 94, 0.18)',
-    modifyBg: 'rgba(234, 179, 8, 0.14)',
-    modifyGutter: 'rgba(234, 179, 8, 0.24)',
+    modifyBg: '#2e2813',
+    modifyGutter: '#2e2813',
     modifyStrong: '#eab308',
     modifyRibbon: 'rgba(234, 179, 8, 0.16)',
     accent: '#60a5fa',
@@ -1552,8 +1604,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     searchMatch: 'rgba(250, 204, 21, 0.28)',
     searchCurrent: 'rgba(249, 115, 22, 0.45)',
     searchCurrentBorder: '#fb923c',
-    inlineRemove: 'rgba(239, 68, 68, 0.48)',
-    inlineAdd: 'rgba(34, 197, 94, 0.48)'
+    inlineModify: '#65531a'
   } : {
     bg: '#f8fafc',
     panelBg: '#ffffff',
@@ -1565,16 +1616,16 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     textDim: '#94a3b8',
     gutterBg: '#f1f5f9',
     gutterText: '#94a3b8',
-    removeBg: 'rgba(239, 68, 68, 0.14)',
-    removeGutter: 'rgba(239, 68, 68, 0.24)',
+    removeBg: '#fde8e8',
+    removeGutter: '#fde8e8',
     removeStrong: '#dc2626',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
-    addBg: 'rgba(34, 197, 94, 0.16)',
-    addGutter: 'rgba(34, 197, 94, 0.26)',
+    addBg: '#dcf7e4',
+    addGutter: '#dcf7e4',
     addStrong: '#16a34a',
     addRibbon: 'rgba(34, 197, 94, 0.20)',
-    modifyBg: 'rgba(234, 179, 8, 0.16)',
-    modifyGutter: 'rgba(234, 179, 8, 0.28)',
+    modifyBg: '#fdf4d0',
+    modifyGutter: '#fdf4d0',
     modifyStrong: '#a8821a',
     modifyRibbon: 'rgba(234, 179, 8, 0.18)',
     accent: '#2563eb',
@@ -1583,8 +1634,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     searchMatch: 'rgba(250, 204, 21, 0.45)',
     searchCurrent: 'rgba(249, 115, 22, 0.55)',
     searchCurrentBorder: '#ea580c',
-    inlineRemove: 'rgba(220, 38, 38, 0.32)',
-    inlineAdd: 'rgba(22, 163, 74, 0.34)'
+    inlineModify: '#efd98c'
   };
 
   const ribbonWidth = 38;
@@ -2212,15 +2262,26 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           autoFocus
         />
 
-        {/* Fold-seam overlay — one full-width layer drawing every collapsed
-            region's wavy top/bottom edge as a single continuous path across
-            both panes and the ribbon gap. Sits below the toolbars (top: 36)
-            and is click-through so it never blocks the panes or ribbon. */}
+        {/* Full-width connector overlays. Pure changes use one SVG for the
+            empty-side marker + tapered ribbon; fold seams use the same global
+            coordinate space. Both are click-through. */}
         <div style={{
           position: 'absolute',
           top: 36, left: 0, right: 0, bottom: 0,
           pointerEvents: 'none', zIndex: 4, overflow: 'hidden'
         }}>
+          <PureChangeOverlay
+            width={bodyWidth}
+            height={ribbonHeight}
+            ribbonWidth={ribbonWidth}
+            lineHeight={lineHeight}
+            hunks={hunks}
+            leftRowOfLine={leftLayout.rowOfLine}
+            rightRowOfLine={rightLayout.rowOfLine}
+            leftScrollTop={leftScrollTop}
+            rightScrollTop={rightScrollTop}
+            colors={colors}
+          />
           <SeamOverlay
             width={bodyWidth}
             height={ribbonHeight}
