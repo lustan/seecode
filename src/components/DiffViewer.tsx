@@ -540,32 +540,25 @@ function EditablePane(props: {
     el.setSelectionRange(within, within);
   }, [docLines, layout]);
 
-  // Pixel rects for each search match, positioned with the same canvas metrics
-  // used for column width so CJK/wide glyphs and tabs land correctly. x is the
-  // width of the text before the match; width is the matched substring's width.
-  // `top` is in DISPLAY-ROW space; matches on folded lines are dropped.
-  const matchRects = useMemo(() => {
-    if (matches.length === 0 || typeof document === 'undefined') return [];
-    const canvas = measureCanvasRef.current || document.createElement('canvas');
-    measureCanvasRef.current = canvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return [];
-    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
-    const tab = '  ';
+  // Search highlights use browser text layout instead of canvas measurements.
+  // Canvas drifts when CJK fallback fonts, Latin glyphs and spaces are mixed.
+  const searchMirrorLines = useMemo(() => {
+    const byLine = new Map<number, Array<Match & { current: boolean }>>();
+    matches.forEach((match, index) => {
+      if (isHidden(match.line)) return;
+      const list = byLine.get(match.line) ?? [];
+      list.push({ ...match, current: index === currentMatchIdx });
+      byLine.set(match.line, list);
+    });
     const lines = text.split('\n');
-    const expand = (s: string) => (s.indexOf('\t') >= 0 ? s.replace(/\t/g, tab) : s);
-    return matches
-      .map((m, i) => ({ m, i }))
-      .filter(({ m }) => !isHidden(m.line))
-      .map(({ m, i }) => {
-        const raw = lines[m.line] ?? '';
-        const before = expand(raw.slice(0, m.start));
-        const inner = expand(raw.slice(m.start, m.end));
-        const x = 12 + ctx.measureText(before).width; // 12 = textarea left padding
-        const w = Math.max(1, ctx.measureText(inner).width);
-        return { x, w, top: rowOfLine[m.line] * lineHeight, current: i === currentMatchIdx };
-      });
-  }, [matches, currentMatchIdx, text, fontSize, lineHeight, rowOfLine, isHidden]);
+    return [...byLine.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([line, ranges]) => ({
+        line,
+        text: lines[line] ?? '',
+        ranges: ranges.sort((a, b) => a.start - b.start)
+      }));
+  }, [matches, currentMatchIdx, text, isHidden]);
 
   // Lines that need an inline-diff mirror. Unlike canvas width measurements,
   // this lets the browser lay out the same text with the same CSS as textarea,
@@ -788,23 +781,38 @@ function EditablePane(props: {
             )}
             {/* Search-match highlight overlay — sits above the color bands but
                 below the (transparent) textarea, so the text stays readable. */}
-            {matchRects.length > 0 && (
+            {searchMirrorLines.length > 0 && (
               <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1 }}>
-                {matchRects.map((r, i) => (
-                  <div
-                    key={`sm-${i}`}
-                    style={{
-                      position: 'absolute',
-                      top: r.top,
-                      left: r.x,
-                      width: r.w,
-                      height: lineHeight,
-                      background: r.current ? colors.searchCurrent : colors.searchMatch,
-                      borderRadius: 2,
-                      boxShadow: r.current ? `0 0 0 1px ${colors.searchCurrentBorder}` : 'none'
-                    }}
-                  />
-                ))}
+                {searchMirrorLines.map(({ line, text: raw, ranges }) => {
+                  const parts: React.ReactNode[] = [];
+                  let cursor = 0;
+                  ranges.forEach((range, index) => {
+                    if (range.start > cursor) parts.push(raw.slice(cursor, range.start));
+                    parts.push(
+                      <span key={`search-${index}`} style={{
+                        background: range.current ? colors.searchCurrent : colors.searchMatch,
+                        borderRadius: 2,
+                        boxShadow: range.current ? `0 0 0 1px ${colors.searchCurrentBorder}` : 'none'
+                      }}>
+                        {raw.slice(range.start, range.end)}
+                      </span>
+                    );
+                    cursor = Math.max(cursor, range.end);
+                  });
+                  if (cursor < raw.length) parts.push(raw.slice(cursor));
+                  return (
+                    <div key={`search-line-${line}`} style={{
+                      position: 'absolute', top: rowOfLine[line] * lineHeight,
+                      left: 0, right: 0, height: lineHeight, padding: '0 12px',
+                      color: 'transparent',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                      fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`,
+                      tabSize: 2, whiteSpace: 'pre', overflow: 'hidden'
+                    }}>
+                      {parts}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {/* One textarea per visible segment, positioned at its display row.
@@ -1199,6 +1207,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
+  const [actionMenuSide, setActionMenuSide] = useState<Side | null>(null);
 
   // Collapse-unchanged-fragments state. `collapseOn` toggles the whole feature
   // (default OFF — unchanged lines are shown until the user opts in). `expanded`
@@ -1332,9 +1341,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     });
   }, [rightMatches.length]);
 
-  // Scroll a pane so the given match is comfortably in view and select its
-  // range via the pane's segment-aware handle. If the match sits inside a
-  // folded region, expand that region first so it becomes reachable.
+  // Scroll a pane so the given match is comfortably in view. Search navigation
+  // deliberately does not focus/select the textarea: the overlay already marks
+  // the active match, while moving native selection there would steal focus
+  // from the find input and paint a second, slightly offset highlight.
   const revealMatch = useCallback((side: Side, m: Match | undefined) => {
     if (!m) return;
     const layout = side === 'left' ? leftLayout : rightLayout;
@@ -1348,7 +1358,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       if (region) { expandRegion(region.id); return; } // re-run after layout updates
     }
     const paneRef = side === 'left' ? leftPaneRef : rightPaneRef;
-    const api = side === 'left' ? leftApiRef : rightApiRef;
     requestAnimationFrame(() => {
       const pane = paneRef.current;
       if (pane) {
@@ -1356,7 +1365,6 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         const top = Math.max(0, y - pane.clientHeight / 3);
         pane.scrollTo({ top, behavior: 'smooth' });
       }
-      api.current?.focusRange(m.line, m.start, m.end);
     });
   }, [leftLayout, rightLayout, collapseRegions, expandRegion, lineHeight]);
 
@@ -1370,6 +1378,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       const next = (base + dir + matches.length) % matches.length;
       revealMatch(side, matches[next]);
       return { ...s, currentIdx: next };
+    });
+    // Keep keyboard input in the find field after Enter/F3 and after clicking
+    // the navigation arrows, so repeated Enter continues through all matches.
+    requestAnimationFrame(() => {
+      const input = side === 'left' ? leftFindInputRef.current : rightFindInputRef.current;
+      input?.focus({ preventScroll: true });
     });
   }, [leftMatches, rightMatches, revealMatch]);
 
@@ -1386,7 +1400,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const closeFind = useCallback((side: Side) => {
     const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
-    setSearch(s => ({ ...s, open: false }));
+    // Closing search also clears its query. Otherwise the bar disappears while
+    // its match overlays remain painted in the editor, which looks like a
+    // stray inline-diff highlight on otherwise unchanged text.
+    setSearch(s => ({ ...s, open: false, query: '', currentIdx: -1 }));
   }, []);
 
   // auto-dismiss format error
@@ -1401,7 +1418,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const el = bodyRef.current;
     if (!el) return;
     const update = () => {
-      setRibbonHeight(el.clientHeight - 36 /* toolbar */);
+      setRibbonHeight(el.clientHeight - 38 /* pane header */);
       setBodyWidth(el.clientWidth);
     };
     update();
@@ -1590,12 +1607,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     removeGutter: '#32191d',
     removeStrong: '#ef4444',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
-    addBg: '#142a1c',
-    addGutter: '#142a1c',
+    addBg: '#142f1d',
+    addGutter: '#142f1d',
     addStrong: '#22c55e',
     addRibbon: 'rgba(34, 197, 94, 0.18)',
-    modifyBg: '#2e2813',
-    modifyGutter: '#2e2813',
+    modifyBg: '#352d12',
+    modifyGutter: '#352d12',
     modifyStrong: '#eab308',
     modifyRibbon: 'rgba(234, 179, 8, 0.16)',
     accent: '#60a5fa',
@@ -1604,7 +1621,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     searchMatch: 'rgba(250, 204, 21, 0.28)',
     searchCurrent: 'rgba(249, 115, 22, 0.45)',
     searchCurrentBorder: '#fb923c',
-    inlineModify: '#65531a'
+    inlineModify: 'rgba(234, 179, 8, 0.48)'
   } : {
     bg: '#f8fafc',
     panelBg: '#ffffff',
@@ -1616,16 +1633,16 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     textDim: '#94a3b8',
     gutterBg: '#f1f5f9',
     gutterText: '#94a3b8',
-    removeBg: '#fde8e8',
-    removeGutter: '#fde8e8',
+    removeBg: '#fee2e2',
+    removeGutter: '#fee2e2',
     removeStrong: '#dc2626',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
-    addBg: '#dcf7e4',
-    addGutter: '#dcf7e4',
+    addBg: '#dcfce7',
+    addGutter: '#dcfce7',
     addStrong: '#16a34a',
     addRibbon: 'rgba(34, 197, 94, 0.20)',
-    modifyBg: '#fdf4d0',
-    modifyGutter: '#fdf4d0',
+    modifyBg: '#fef3c7',
+    modifyGutter: '#fef3c7',
     modifyStrong: '#a8821a',
     modifyRibbon: 'rgba(234, 179, 8, 0.18)',
     accent: '#2563eb',
@@ -1634,10 +1651,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     searchMatch: 'rgba(250, 204, 21, 0.45)',
     searchCurrent: 'rgba(249, 115, 22, 0.55)',
     searchCurrentBorder: '#ea580c',
-    inlineModify: '#efd98c'
+    inlineModify: '#fcd34d'
   };
 
-  const ribbonWidth = 38;
+  const ribbonWidth = 24;
 
   const candidates = notes;
   const filteredCandidates = useMemo(() => {
@@ -1745,12 +1762,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         >
           Aa
         </button>
-        <button className="dv-find-nav" onClick={() => stepMatch(side, -1)} disabled={total === 0} title="Previous (Shift+Enter)">
+        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, -1)} disabled={total === 0} title="Previous (Shift+Enter)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="18 15 12 9 6 15"></polyline>
           </svg>
         </button>
-        <button className="dv-find-nav" onClick={() => stepMatch(side, 1)} disabled={total === 0} title="Next (Enter)">
+        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, 1)} disabled={total === 0} title="Next (Enter)">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="6 9 12 15 18 9"></polyline>
           </svg>
@@ -1769,14 +1786,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const src = side === 'left' ? leftSrc : rightSrc;
     const title = side === 'left' ? leftTitle : rightTitle;
     const isNote = src.kind === 'note';
-    const dot = side === 'left' ? colors.removeStrong : colors.addStrong;
+    const role = side === 'left' ? 'Before' : 'After';
     return (
       <button
         className="dv-file-chip"
         onClick={() => { setPickerSide(side); setPickerSearch(''); }}
         title="Choose a file for this side"
       >
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0 }} />
+        <span className="dv-file-role">{role}</span>
         {isNote ? (
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -1801,67 +1818,58 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const err = formatError && formatError.side === side ? formatError.message : null;
     return (
       <div style={{
-        height: 36, flexShrink: 0, padding: '0 10px',
-        display: 'flex', alignItems: 'center', gap: 6,
+        height: 38, flexShrink: 0, padding: '0 10px 0 12px',
+        display: 'flex', alignItems: 'center', gap: 8,
         borderBottom: `1px solid ${colors.border}`,
-        background: theme === 'dark' ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.015)'
+        background: colors.headerBg
       }}>
         <span style={{
-          fontSize: 10, fontWeight: 800, color: colors.textDim,
-          letterSpacing: 0.04, textTransform: 'uppercase'
+          fontSize: 11, fontWeight: 700, color: colors.textSec,
+          letterSpacing: 0.01
         }}>
-          {side === 'left' ? 'Left' : 'Right'}
+          {side === 'left' ? 'Before' : 'After'}
         </span>
-        <div style={{ width: 1, height: 14, background: colors.border, margin: '0 4px' }} />
-        <button className="dv-mini-btn" onClick={() => openFind(side)} title="Find (Ctrl+F)">
+        <span style={{ fontSize: 10, color: colors.textDim, fontWeight: 600 }}>
+          {text === '' ? 'Empty' : `${text.split('\n').length} lines / ${text.length} chars`}
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
+        <button className="dv-toolbar-icon" onClick={() => openFind(side)} title="Find (Ctrl+F)" aria-label={`Find in ${side} file`}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="11" cy="11" r="7"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
-          Find
         </button>
-        <button className="dv-mini-btn" onClick={() => formatJsonOn(side)} title="Format JSON">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="16 18 22 12 16 6"></polyline>
-            <polyline points="8 6 2 12 8 18"></polyline>
-          </svg>
-          Format JSON
-        </button>
-        <button className="dv-mini-btn" onClick={() => navigator.clipboard.writeText(text)} title="Copy">
+        <button className="dv-toolbar-icon" onClick={() => navigator.clipboard.writeText(text)} title="Copy all" aria-label={`Copy ${side} file`}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
-          Copy
         </button>
-        <button className="dv-mini-btn danger" onClick={() => clearSide(side)} title="Clear">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-          Clear
-        </button>
-        {err && (
-          <span style={{
-            marginLeft: 'auto', fontSize: 11, fontWeight: 700,
-            color: colors.removeStrong, display: 'inline-flex', alignItems: 'center', gap: 5,
-            padding: '3px 8px', borderRadius: 6,
-            background: 'rgba(239, 68, 68, 0.12)'
-          }}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill={colors.removeStrong} stroke="none">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="12" stroke="white" strokeWidth="2" strokeLinecap="round"></line>
-              <line x1="12" y1="16" x2="12.01" y2="16" stroke="white" strokeWidth="2" strokeLinecap="round"></line>
+        <div className="dv-action-wrap">
+          <button className="dv-toolbar-icon" onClick={() => setActionMenuSide(v => v === side ? null : side)} title="More actions" aria-label={`More actions for ${side} file`}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+              <circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle>
             </svg>
+          </button>
+          {actionMenuSide === side && (
+            <div className={`dv-action-menu ${side}`}>
+              <button onClick={() => { formatJsonOn(side); setActionMenuSide(null); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+                Format JSON
+              </button>
+              <button className="danger" onClick={() => { clearSide(side); setActionMenuSide(null); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                Clear side
+              </button>
+            </div>
+          )}
+        </div>
+        </div>
+        {err && (
+          <span className="dv-format-error">
             {err}
           </span>
         )}
-        <span style={{
-          marginLeft: err ? 8 : 'auto', fontSize: 10, fontWeight: 700,
-          color: colors.textDim, letterSpacing: 0.04
-        }}>
-          {text.split('\n').length} LINES · {text.length} CHR
-        </span>
       </div>
     );
   };
@@ -1936,6 +1944,40 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           max-width: 180px;
         }
+        .dv-file-role {
+          color: ${colors.textDim}; font-size: 9px; font-weight: 800;
+          letter-spacing: 0.06em; text-transform: uppercase;
+          padding-right: 7px; border-right: 1px solid ${colors.border};
+        }
+        .dv-toolbar-icon {
+          width: 27px; height: 27px; border: 1px solid transparent; border-radius: 6px;
+          display: inline-flex; align-items: center; justify-content: center;
+          color: ${colors.textSec}; background: transparent; cursor: pointer;
+          transition: all 0.15s;
+        }
+        .dv-toolbar-icon:hover {
+          color: ${colors.accent}; background: ${theme === 'dark' ? 'rgba(96,165,250,0.10)' : 'rgba(37,99,235,0.06)'};
+        }
+        .dv-action-wrap { position: relative; display: flex; }
+        .dv-action-menu {
+          position: absolute; top: 31px; right: 0; z-index: 40; width: 156px;
+          padding: 5px; border: 1px solid ${colors.borderStrong}; border-radius: 9px;
+          background: ${colors.pickerBg}; box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+          animation: diffSlide 0.12s ease-out;
+        }
+        .dv-action-menu button {
+          width: 100%; height: 30px; padding: 0 9px; border: none; border-radius: 6px;
+          display: flex; align-items: center; gap: 8px; background: transparent;
+          color: ${colors.textSec}; font-size: 11px; font-weight: 700; cursor: pointer;
+        }
+        .dv-action-menu button:hover { color: ${colors.text}; background: ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(15,23,42,0.05)'}; }
+        .dv-action-menu button.danger:hover { color: ${colors.removeStrong}; background: rgba(239,68,68,0.08); }
+        .dv-format-error {
+          position: absolute; right: 42px; top: 7px; z-index: 35;
+          padding: 4px 8px; border-radius: 6px; color: ${colors.removeStrong};
+          background: ${colors.pickerBg}; border: 1px solid rgba(239,68,68,0.25);
+          font-size: 10px; font-weight: 700;
+        }
         .dv-mini-btn {
           height: 26px; padding: 0 9px; border-radius: 6px;
           border: 1px solid ${colors.border}; background: transparent;
@@ -1952,11 +1994,17 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           background: rgba(239, 68, 68, 0.08);
         }
         .dv-toggle-btn {
-          height: 30px; padding: 0 11px; border-radius: 7px;
+          height: 28px; padding: 0 9px; border-radius: 7px;
           border: 1px solid ${colors.border}; background: transparent;
           color: ${colors.textSec}; font-size: 12px; font-weight: 700;
           cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
           transition: all 0.15s; outline: none; white-space: nowrap;
+        }
+        .dv-toggle-btn .compact-label { display: inline; }
+        @media (max-width: 1120px) {
+          .dv-brand-text, .dv-toggle-btn .compact-label, .dv-file-role { display: none; }
+          .dv-file-chip { max-width: 190px; }
+          .dv-chip { padding-left: 7px; padding-right: 7px; }
         }
         .dv-toggle-btn:hover {
           color: ${colors.text}; border-color: ${colors.borderStrong};
@@ -2077,27 +2125,23 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
       {/* Header */}
       <div style={{
-        height: 48, flexShrink: 0, padding: '0 14px',
+        height: 52, flexShrink: 0, padding: '0 14px',
         background: colors.headerBg, borderBottom: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '5px 10px', borderRadius: 7,
-            background: theme === 'dark' ? 'rgba(96, 165, 250, 0.12)' : 'rgba(59, 130, 246, 0.08)',
-            color: colors.accent, fontSize: 11, fontWeight: 800, letterSpacing: 0.04
-          }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, color: colors.accent, flexShrink: 0 }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
               <line x1="6" y1="3" x2="6" y2="15"></line>
               <circle cx="18" cy="6" r="3"></circle>
               <circle cx="6" cy="18" r="3"></circle>
               <path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
-            FILE COMPARE
+            <span className="dv-brand-text" style={{ color: colors.text, fontSize: 12, fontWeight: 800, letterSpacing: '-0.01em' }}>File compare</span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ width: 1, height: 22, background: colors.border }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
             {fileChip('left')}
             <button className="dv-icon-btn" onClick={swapSides} title="Swap sides" style={{ width: 26, height: 26 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -2111,7 +2155,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }} title="Difference summary">
+            <span className="dv-chip" style={{ background: colors.removeBg, color: colors.removeStrong }}>
+              −{stats.removed}
+            </span>
+            <span className="dv-chip" style={{ background: colors.modifyBg, color: colors.modifyStrong }}>
+              ~{stats.modified}
+            </span>
+            <span className="dv-chip" style={{ background: colors.addBg, color: colors.addStrong }}>
+              +{stats.added}
+            </span>
+          </div>
+
+          <div style={{ width: 1, height: 22, background: colors.border, margin: '0 1px' }} />
+
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: 3, borderRadius: 8,
@@ -2128,7 +2186,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               </svg>
             </button>
             <span className="dv-nav-counter">
-              {hunks.length === 0 ? '0 / 0' : `${currentHunkIdx + 1} / ${hunks.length}`}
+              {hunks.length === 0 ? 'No differences' : `${currentHunkIdx + 1} of ${hunks.length}`}
             </span>
             <button
               className="dv-nav-btn"
@@ -2142,32 +2200,18 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             </button>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span className="dv-chip" style={{ background: colors.removeBg, color: colors.removeStrong }}>
-              −{stats.removed}
-            </span>
-            <span className="dv-chip" style={{ background: colors.modifyBg, color: colors.modifyStrong }}>
-              ~{stats.modified}
-            </span>
-            <span className="dv-chip" style={{ background: colors.addBg, color: colors.addStrong }}>
-              +{stats.added}
-            </span>
-          </div>
-
-          <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
-
           <button
             className={`dv-toggle-btn${collapseOn ? ' active' : ''}`}
             onClick={() => { setCollapseOn(v => !v); setExpanded(new Set()); }}
             disabled={foldableCount === 0}
             style={foldableCount === 0 ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
-            title="Collapse unchanged fragments"
+            title="Show only differences by collapsing unchanged lines"
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="7 4 12 9 17 4"></polyline>
               <polyline points="7 20 12 15 17 20"></polyline>
             </svg>
-            Collapse unchanged
+            <span className="compact-label">Only differences</span>
           </button>
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
@@ -2216,7 +2260,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           position: 'relative'
         }}>
           <div style={{
-            height: 36, flexShrink: 0,
+            height: 38, flexShrink: 0,
             background: colors.gutterBg
           }} />
           <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
@@ -2267,7 +2311,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             coordinate space. Both are click-through. */}
         <div style={{
           position: 'absolute',
-          top: 36, left: 0, right: 0, bottom: 0,
+          top: 38, left: 0, right: 0, bottom: 0,
           pointerEvents: 'none', zIndex: 4, overflow: 'hidden'
         }}>
           <PureChangeOverlay
