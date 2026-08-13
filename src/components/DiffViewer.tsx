@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Note } from '../App';
+import { buildInlineDiffs } from '../utils/inlineDiff.mjs';
 
 interface Props {
   notes: Note[];
@@ -23,6 +24,7 @@ type Side = 'left' | 'right';
 
 // One search hit, addressed by 0-based line + column range within that line.
 type Match = { line: number; start: number; end: number };
+type InlineRange = Match;
 
 // Per-side find state. `open` toggles the floating find bar; `currentIdx`
 // is the index into the matches array (or -1 when there are none).
@@ -307,6 +309,8 @@ type DiffColors = {
   searchMatch: string;
   searchCurrent: string;
   searchCurrentBorder: string;
+  inlineRemove: string;
+  inlineAdd: string;
 };
 
 // Imperative handle a pane exposes so the parent can focus a specific document
@@ -338,6 +342,8 @@ function EditablePane(props: {
   autoFocus?: boolean;
   /** Search matches on THIS side, and the index of the active one (-1 = none). */
   matches: Match[];
+  /** Changed character ranges inside paired modified lines on this side. */
+  inlineRanges: InlineRange[];
   currentMatchIdx: number;
   onFocusPane?: () => void;
   /** Focus left the pane's textareas — parent clears active-edit tracking. */
@@ -357,7 +363,7 @@ function EditablePane(props: {
     side, text, onChange, hunks, layout,
     lineHeight, fontSize, colors, paneRef, apiRef, onScroll,
     currentHunkIdx, toolbar, autoFocus, bottomPadding,
-    matches, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
+    matches, inlineRanges, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
   } = props;
 
   const numColWidth = 50;
@@ -562,6 +568,27 @@ function EditablePane(props: {
       });
   }, [matches, currentMatchIdx, text, fontSize, lineHeight, rowOfLine, isHidden]);
 
+  // IDEA-style character highlights within modified lines. This deliberately
+  // uses the same canvas metrics and padding as search highlights/text width.
+  const inlineRects = useMemo(() => {
+    if (inlineRanges.length === 0 || typeof document === 'undefined') return [];
+    const canvas = measureCanvasRef.current || document.createElement('canvas');
+    measureCanvasRef.current = canvas;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return [];
+    ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+    const lines = text.split('\n');
+    const expand = (s: string) => (s.indexOf('\t') >= 0 ? s.replace(/\t/g, '  ') : s);
+    return inlineRanges
+      .filter(r => !isHidden(r.line) && r.end > r.start)
+      .map(r => {
+        const raw = lines[r.line] ?? '';
+        const x = 12 + ctx.measureText(expand(raw.slice(0, r.start))).width;
+        const w = Math.max(1, ctx.measureText(expand(raw.slice(r.start, r.end))).width);
+        return { x, w, top: rowOfLine[r.line] * lineHeight };
+      });
+  }, [inlineRanges, text, fontSize, lineHeight, rowOfLine, isHidden]);
+
   // Per-line kind, indexed by 0-based line in THIS side.
   const lineKinds = useMemo<RowKind[]>(() => {
     const out: RowKind[] = new Array(Math.max(totalLines, 0)).fill('equal');
@@ -758,6 +785,24 @@ function EditablePane(props: {
                 return bands;
               })}
             </div>
+            {/* Deeper red/green blocks pinpoint the changed characters inside
+                a modified line, while the existing band continues to identify
+                the line as a whole. */}
+            {inlineRects.length > 0 && (
+              <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1 }}>
+                {inlineRects.map((r, i) => (
+                  <div
+                    key={`id-${i}`}
+                    style={{
+                      position: 'absolute', top: r.top, left: r.x,
+                      width: r.w, height: lineHeight,
+                      background: side === 'left' ? colors.inlineRemove : colors.inlineAdd,
+                      borderRadius: 2
+                    }}
+                  />
+                ))}
+              </div>
+            )}
             {/* Search-match highlight overlay — sits above the color bands but
                 below the (transparent) textarea, so the text stays readable. */}
             {matchRects.length > 0 && (
@@ -1157,6 +1202,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return buildHunks(computeDiff(a, b), a.length, b.length);
   }, [leftText, rightText]);
 
+  const inlineDiffs = useMemo(
+    () => buildInlineDiffs(leftText.split('\n'), rightText.split('\n'), hunks),
+    [leftText, rightText, hunks]
+  );
+
   const leftTotalLines = leftText === '' ? 0 : leftText.split('\n').length;
   const rightTotalLines = rightText === '' ? 0 : rightText.split('\n').length;
 
@@ -1501,7 +1551,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     pickerItemHover: 'rgba(59, 130, 246, 0.15)',
     searchMatch: 'rgba(250, 204, 21, 0.28)',
     searchCurrent: 'rgba(249, 115, 22, 0.45)',
-    searchCurrentBorder: '#fb923c'
+    searchCurrentBorder: '#fb923c',
+    inlineRemove: 'rgba(239, 68, 68, 0.48)',
+    inlineAdd: 'rgba(34, 197, 94, 0.48)'
   } : {
     bg: '#f8fafc',
     panelBg: '#ffffff',
@@ -1530,7 +1582,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     pickerItemHover: 'rgba(59, 130, 246, 0.10)',
     searchMatch: 'rgba(250, 204, 21, 0.45)',
     searchCurrent: 'rgba(249, 115, 22, 0.55)',
-    searchCurrentBorder: '#ea580c'
+    searchCurrentBorder: '#ea580c',
+    inlineRemove: 'rgba(220, 38, 38, 0.32)',
+    inlineAdd: 'rgba(22, 163, 74, 0.34)'
   };
 
   const ribbonWidth = 38;
@@ -2095,6 +2149,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           toolbar={editToolbar('left')}
           bottomPadding={leftBottomPad}
           matches={leftMatches}
+          inlineRanges={inlineDiffs.left}
           currentMatchIdx={leftSearch.currentIdx}
           onFocusPane={() => setFocusedSide('left')}
           findBar={findBar('left')}
@@ -2147,6 +2202,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           toolbar={editToolbar('right')}
           bottomPadding={rightBottomPad}
           matches={rightMatches}
+          inlineRanges={inlineDiffs.right}
           currentMatchIdx={rightSearch.currentIdx}
           onFocusPane={() => setFocusedSide('right')}
           findBar={findBar('right')}

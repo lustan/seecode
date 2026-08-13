@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node tests/brandStyles.test.mjs && node tests/feedbackRouting.test.mjs && node tests/toastTheme.test.mjs && node tests/layout.test.mjs"
+    "test": "node tests/brandStyles.test.mjs && node tests/feedbackRouting.test.mjs && node tests/toastTheme.test.mjs && node tests/layout.test.mjs && node tests/inlineDiff.test.mjs"
   },
   "dependencies": {
     "@codemirror/lang-java": "^6.0.2",
