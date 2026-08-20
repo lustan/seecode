@@ -169,7 +169,7 @@ function buildHunks(ops: DiffOp[], leftTotal: number, rightTotal: number): Hunk[
 // clickable "⋯ N unchanged lines" strip.
 // =============================================================================
 const CONTEXT_LINES = 3;
-const RIBBON_WIDTH = 44;
+const RIBBON_WIDTH = 28;
 // Only fold a gap when doing so hides at least this many lines — otherwise the
 // strip would save no space.
 const COLLAPSE_MIN = 4;
@@ -341,10 +341,12 @@ type DiffColors = {
   removeBg: string;
   removeGutter: string;
   removeStrong: string;
+  removeMarker: string;
   removeRibbon: string;
   addBg: string;
   addGutter: string;
   addStrong: string;
+  addMarker: string;
   addRibbon: string;
   modifyBg: string;
   modifyGutter: string;
@@ -997,21 +999,18 @@ function ConnectorRibbon(props: {
   width: number;
   height: number;
   hunks: Hunk[];
-  currentHunkIdx: number;
   lineHeight: number;
   leftScrollTop: number;
   rightScrollTop: number;
   colors: DiffColors;
   onHunkClick: (idx: number) => void;
-  onApplyHunk: (idx: number, sourceSide: Side) => void;
-  applyDisabled: boolean;
   /** Convert a document line to its display-row top on each side. */
   leftRowOfLine: number[];
   rightRowOfLine: number[];
 }) {
   const {
-    width, height, hunks, currentHunkIdx, lineHeight,
-    leftScrollTop, rightScrollTop, colors, onHunkClick, onApplyHunk, applyDisabled,
+    width, height, hunks, lineHeight,
+    leftScrollTop, rightScrollTop, colors, onHunkClick,
     leftRowOfLine, rightRowOfLine
   } = props;
   const ribbonColor = (k: RowKind): string => {
@@ -1054,7 +1053,6 @@ function ConnectorRibbon(props: {
         // Build a smooth bezier-bounded trapezoid.
         // Top edge: left(lTop) → right(rTop)
         // Bottom edge: right(rBot) → left(lBot)
-        const midX = width / 2;
         const cpOffset = width * 0.4;
         const path =
           `M 0 ${lTopUse} ` +
@@ -1063,7 +1061,6 @@ function ConnectorRibbon(props: {
           `C ${width - cpOffset} ${rBotUse}, ${cpOffset} ${lBotUse}, 0 ${lBotUse} ` +
           `Z`;
 
-        const controlY = Math.max(2, Math.min(height - 22, ((lTopUse + lBotUse + rTopUse + rBotUse) / 4) - 10));
         return (
           <g key={idx} className="dv-hunk-control" onClick={() => onHunkClick(idx)} style={{ cursor: 'pointer' }}>
             <path
@@ -1073,28 +1070,91 @@ function ConnectorRibbon(props: {
               opacity={1}
               pointerEvents="all"
             />
-            <foreignObject x={2} y={controlY} width={width - 4} height={20} style={{ overflow: 'visible' }}>
-              <div className="dv-apply-group" data-active={idx === currentHunkIdx ? 'true' : 'false'}>
-                <button
-                  className="dv-apply-btn"
-                  disabled={applyDisabled}
-                  title={applyDisabled ? 'Both sides reference the same note' : 'Apply right block to left'}
-                  aria-label="Apply right difference to left"
-                  onClick={e => { e.stopPropagation(); onApplyHunk(idx, 'right'); }}
-                >←</button>
-                <button
-                  className="dv-apply-btn"
-                  disabled={applyDisabled}
-                  title={applyDisabled ? 'Both sides reference the same note' : 'Apply left block to right'}
-                  aria-label="Apply left difference to right"
-                  onClick={e => { e.stopPropagation(); onApplyHunk(idx, 'left'); }}
-                >→</button>
-              </div>
-            </foreignObject>
           </g>
         );
       })}
     </svg>
+  );
+}
+
+// Apply controls live on the outer edges of the two line-number gutters. This
+// keeps the connector ribbon unobstructed and mirrors JetBrains' `»` / `«`
+// affordance: left copies to right, right copies to left.
+function ApplyControlsOverlay(props: {
+  width: number;
+  height: number;
+  ribbonWidth: number;
+  lineHeight: number;
+  hunks: Hunk[];
+  currentHunkIdx: number;
+  leftRowOfLine: number[];
+  rightRowOfLine: number[];
+  leftScrollTop: number;
+  rightScrollTop: number;
+  disabled: boolean;
+  onApplyHunk: (idx: number, sourceSide: Side) => void;
+}) {
+  const {
+    width, height, ribbonWidth, lineHeight, hunks, currentHunkIdx,
+    leftRowOfLine, rightRowOfLine, leftScrollTop, rightScrollTop,
+    disabled, onApplyHunk
+  } = props;
+  if (width <= 0) return null;
+
+  const gutterWidth = 50;
+  const buttonSize = 20;
+  const paneWidth = (width - ribbonWidth) / 2;
+  const rightPaneStart = paneWidth + ribbonWidth;
+
+  const controlTop = (hunk: Hunk, side: Side): number => {
+    const rows = side === 'left' ? leftRowOfLine : rightRowOfLine;
+    const scrollTop = side === 'left' ? leftScrollTop : rightScrollTop;
+    const first = side === 'left' ? hunk.leftFirst : hunk.rightFirst;
+    const last = side === 'left' ? hunk.leftLast : hunk.rightLast;
+    const topRow = rows[first] ?? first;
+    const bottomRow = rows[last + 1] ?? topRow;
+    const visualSpan = Math.max(1, bottomRow - topRow);
+    return (topRow + visualSpan / 2) * lineHeight - scrollTop - buttonSize / 2;
+  };
+
+  return (
+    <>
+      {hunks.flatMap((hunk, idx) => (['left', 'right'] as Side[]).map(side => {
+        const top = controlTop(hunk, side);
+        if (top + buttonSize < 0 || top > height) return null;
+        const pointsRight = side === 'left';
+        const left = pointsRight
+          ? paneWidth - gutterWidth + 2
+          : rightPaneStart + gutterWidth - buttonSize - 2;
+        const targetSide = pointsRight ? 'right' : 'left';
+        return (
+          <button
+            key={`${idx}-${side}`}
+            className="dv-gutter-apply-btn"
+            data-active={idx === currentHunkIdx ? 'true' : 'false'}
+            disabled={disabled}
+            style={{ position: 'absolute', left, top }}
+            title={disabled ? 'Both sides reference the same note' : `Apply ${side} block to ${targetSide}`}
+            aria-label={`Apply ${side} difference to ${targetSide}`}
+            onClick={event => { event.stopPropagation(); onApplyHunk(idx, side); }}
+          >
+            <svg width="16" height="16" viewBox="0 0 18 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {pointsRight ? (
+                <>
+                  <polyline points="3 4 8 10 3 16" />
+                  <polyline points="9 4 14 10 9 16" />
+                </>
+              ) : (
+                <>
+                  <polyline points="15 4 10 10 15 16" />
+                  <polyline points="9 4 4 10 9 16" />
+                </>
+              )}
+            </svg>
+          </button>
+        );
+      }))}
+    </>
   );
 }
 
@@ -1125,6 +1185,10 @@ function PureChangeOverlay(props: {
   const paneWidth = (width - ribbonWidth) / 2;
   const ribbonEnd = paneWidth + ribbonWidth;
   const cpOffset = ribbonWidth * 0.4;
+  // Pure changes collapse toward an empty-side marker. Keep a small rounded
+  // neck instead of converging both wedge edges to one sharp point.
+  const neckHalfHeight = Math.min(2, lineHeight * 0.1);
+  const capDepth = 1.5;
 
   return (
     <svg width={width} height={height} style={{ display: 'block', position: 'absolute', inset: 0 }}>
@@ -1138,32 +1202,35 @@ function PureChangeOverlay(props: {
         if (Math.max(lBot, rBot) < -20 || Math.min(lTop, rTop) > height + 20) return null;
 
         if (h.kind === 'add') {
-          // The left side is empty: its full-width marker and the green wedge
-          // are a single group with a shared point at (paneWidth, lTop).
+          // The left side is empty. A rounded cap joins the horizontal marker
+          // to the green wedge without the old needle-like point.
           const wedge =
-            `M ${paneWidth - 1} ${lTop} ` +
-            `C ${paneWidth + cpOffset} ${lTop}, ${ribbonEnd - cpOffset} ${rTop}, ${ribbonEnd + 1} ${rTop} ` +
+            `M ${paneWidth} ${lTop - neckHalfHeight} ` +
+            `C ${paneWidth + cpOffset} ${lTop - neckHalfHeight}, ${ribbonEnd - cpOffset} ${rTop}, ${ribbonEnd + 1} ${rTop} ` +
             `L ${ribbonEnd + 1} ${rBot} ` +
-            `C ${ribbonEnd - cpOffset} ${rBot}, ${paneWidth + cpOffset} ${lTop}, ${paneWidth - 1} ${lTop} Z`;
+            `C ${ribbonEnd - cpOffset} ${rBot}, ${paneWidth + cpOffset} ${lTop + neckHalfHeight}, ${paneWidth} ${lTop + neckHalfHeight} ` +
+            `Q ${paneWidth - capDepth} ${lTop + neckHalfHeight}, ${paneWidth - capDepth} ${lTop} ` +
+            `Q ${paneWidth - capDepth} ${lTop - neckHalfHeight}, ${paneWidth} ${lTop - neckHalfHeight} Z`;
           return (
             <g key={`pure-${idx}`}>
               <path d={wedge} fill={colors.addBg} />
-              <path d={`M 0 ${lTop} L ${paneWidth} ${lTop}`} fill="none" stroke={colors.addStrong} strokeWidth={1} opacity={0.9} />
+              <path d={`M 0 ${lTop} L ${paneWidth - capDepth} ${lTop}`} fill="none" stroke={colors.addMarker} strokeWidth={1} strokeLinecap="round" />
             </g>
           );
         }
 
-        // The right side is empty: mirror the deletion wedge and continue its
-        // point as one red marker all the way across the empty pane.
+        // The right side is empty: mirror the same rounded marker connection.
         const wedge =
           `M ${paneWidth - 1} ${lTop} ` +
           `L ${paneWidth - 1} ${lBot} ` +
-          `C ${paneWidth + cpOffset} ${lBot}, ${ribbonEnd - cpOffset} ${rTop}, ${ribbonEnd + 1} ${rTop} ` +
-          `C ${ribbonEnd - cpOffset} ${rTop}, ${paneWidth + cpOffset} ${lTop}, ${paneWidth - 1} ${lTop} Z`;
+          `C ${paneWidth + cpOffset} ${lBot}, ${ribbonEnd - cpOffset} ${rTop + neckHalfHeight}, ${ribbonEnd} ${rTop + neckHalfHeight} ` +
+          `Q ${ribbonEnd + capDepth} ${rTop + neckHalfHeight}, ${ribbonEnd + capDepth} ${rTop} ` +
+          `Q ${ribbonEnd + capDepth} ${rTop - neckHalfHeight}, ${ribbonEnd} ${rTop - neckHalfHeight} ` +
+          `C ${ribbonEnd - cpOffset} ${rTop - neckHalfHeight}, ${paneWidth + cpOffset} ${lTop}, ${paneWidth - 1} ${lTop} Z`;
         return (
           <g key={`pure-${idx}`}>
             <path d={wedge} fill={colors.removeBg} />
-            <path d={`M ${ribbonEnd} ${rTop} L ${width} ${rTop}`} fill="none" stroke={colors.removeStrong} strokeWidth={1} opacity={0.9} />
+            <path d={`M ${ribbonEnd + capDepth} ${rTop} L ${width} ${rTop}`} fill="none" stroke={colors.removeMarker} strokeWidth={1} strokeLinecap="round" />
           </g>
         );
       })}
@@ -1730,10 +1797,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     removeBg: '#32191d',
     removeGutter: '#32191d',
     removeStrong: '#ef4444',
+    removeMarker: 'rgba(248, 113, 113, 0.58)',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
     addBg: '#142f1d',
     addGutter: '#142f1d',
     addStrong: '#22c55e',
+    addMarker: 'rgba(74, 222, 128, 0.58)',
     addRibbon: 'rgba(34, 197, 94, 0.18)',
     modifyBg: '#352d12',
     modifyGutter: '#352d12',
@@ -1760,10 +1829,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     removeBg: '#fee2e2',
     removeGutter: '#fee2e2',
     removeStrong: '#dc2626',
+    removeMarker: '#fca5a5',
     removeRibbon: 'rgba(239, 68, 68, 0.18)',
     addBg: '#dcfce7',
     addGutter: '#dcfce7',
     addStrong: '#16a34a',
+    addMarker: '#86efac',
     addRibbon: 'rgba(34, 197, 94, 0.20)',
     modifyBg: '#fef3c7',
     modifyGutter: '#fef3c7',
@@ -2093,33 +2164,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           font-variant-numeric: tabular-nums;
           min-width: 36px; text-align: center; letter-spacing: 0.02em;
         }
-        .dv-apply-group {
-          width: 40px; height: 20px; padding: 2px;
-          display: flex; align-items: center; justify-content: center; gap: 2px;
-          border: 1px solid ${colors.borderStrong}; border-radius: 6px;
-          background: ${colors.pickerBg};
-          box-shadow: 0 3px 10px rgba(0,0,0,${theme === 'dark' ? '0.34' : '0.12'});
-          opacity: 0; transform: scale(0.94);
-          transition: opacity 0.14s ease, transform 0.14s ease;
-          pointer-events: none;
-        }
-        .dv-hunk-control:hover .dv-apply-group,
-        .dv-apply-group[data-active="true"] {
-          opacity: 1; transform: scale(1); pointer-events: auto;
-        }
-        .dv-apply-btn {
-          width: 17px; height: 16px; padding: 0; border: 0; border-radius: 4px;
+        .dv-gutter-apply-btn {
+          width: 20px; height: 20px; padding: 0;
+          border: 0; border-radius: 0;
           display: inline-flex; align-items: center; justify-content: center;
-          background: transparent; color: ${colors.textSec};
-          font: 800 13px/1 ui-sans-serif, system-ui, sans-serif;
-          cursor: pointer; transition: color 0.12s, background 0.12s;
+          background: transparent; color: ${colors.textDim};
+          cursor: pointer; pointer-events: auto;
+          opacity: 0.62;
+          transition: color 0.12s, opacity 0.12s;
         }
-        .dv-apply-btn:hover:not(:disabled) {
-          color: ${colors.accent};
-          background: ${theme === 'dark' ? 'rgba(96,165,250,0.16)' : 'rgba(37,99,235,0.10)'};
+        .dv-gutter-apply-btn[data-active="true"] {
+          color: ${colors.textDim}; opacity: 0.72;
         }
-        .dv-apply-btn:focus-visible { outline: 1px solid ${colors.accent}; outline-offset: -1px; }
-        .dv-apply-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .dv-gutter-apply-btn:hover:not(:disabled) {
+          color: ${colors.accent}; opacity: 1;
+          background: transparent;
+        }
+        .dv-gutter-apply-btn:focus-visible { outline: 2px solid ${colors.accent}; outline-offset: 1px; }
+        .dv-gutter-apply-btn:disabled { opacity: 0.25; cursor: not-allowed; }
         .dv-undo-toast {
           position: fixed; left: 50%; bottom: 28px; z-index: 80;
           transform: translateX(-50%); min-height: 38px; padding: 0 7px 0 13px;
@@ -2496,14 +2558,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               width={ribbonWidth}
               height={ribbonHeight}
               hunks={hunks}
-              currentHunkIdx={currentHunkIdx}
               lineHeight={lineHeight}
               leftScrollTop={leftScrollTop}
               rightScrollTop={rightScrollTop}
               colors={colors}
               onHunkClick={idx => { setCurrentHunkIdx(idx); scrollToHunk(idx); }}
-              onApplyHunk={handleApplyHunk}
-              applyDisabled={sameBackingNote}
               leftRowOfLine={leftLayout.rowOfLine}
               rightRowOfLine={rightLayout.rowOfLine}
             />
@@ -2569,6 +2628,26 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             leftScrollTop={leftScrollTop}
             rightScrollTop={rightScrollTop}
             colors={colors}
+          />
+        </div>
+
+        <div style={{
+          position: 'absolute', top: 38, left: 0, right: 0, bottom: 0,
+          pointerEvents: 'none', zIndex: 6, overflow: 'hidden'
+        }}>
+          <ApplyControlsOverlay
+            width={bodyWidth}
+            height={ribbonHeight}
+            ribbonWidth={ribbonWidth}
+            lineHeight={lineHeight}
+            hunks={hunks}
+            currentHunkIdx={currentHunkIdx}
+            leftRowOfLine={leftLayout.rowOfLine}
+            rightRowOfLine={rightLayout.rowOfLine}
+            leftScrollTop={leftScrollTop}
+            rightScrollTop={rightScrollTop}
+            disabled={sameBackingNote}
+            onApplyHunk={handleApplyHunk}
           />
         </div>
 
