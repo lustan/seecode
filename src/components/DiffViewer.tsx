@@ -169,6 +169,7 @@ function buildHunks(ops: DiffOp[], leftTotal: number, rightTotal: number): Hunk[
 // clickable "⋯ N unchanged lines" strip.
 // =============================================================================
 const CONTEXT_LINES = 3;
+const RIBBON_WIDTH = 44;
 // Only fold a gap when doing so hides at least this many lines — otherwise the
 // strip would save no space.
 const COLLAPSE_MIN = 4;
@@ -244,9 +245,43 @@ type SideLayout = {
   lineOfRow: number[];
 };
 
+// Approximate the browser's soft-wrap layout in display rows. The diff panes
+// use a monospace stack and `word-break: break-all`, so measuring glyph widths
+// individually keeps line numbers, highlights, and connector ribbons aligned
+// with wrapped textarea content (including CJK and other wide glyphs).
+function computeWrappedRowSpans(text: string, contentWidth: number, fontSize: number): number[] {
+  const lines = text === '' ? [] : text.split('\n');
+  if (contentWidth <= 0 || typeof document === 'undefined') return lines.map(() => 1);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return lines.map(() => 1);
+  ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  const spaceWidth = ctx.measureText(' ').width;
+  const glyphWidths = new Map<string, number>();
+  return lines.map(line => {
+    if (!line) return 1;
+    let rows = 1;
+    let width = 0;
+    for (const char of line) {
+      let charWidth = char === '\t' ? spaceWidth * 2 : glyphWidths.get(char);
+      if (charWidth == null) {
+        charWidth = ctx.measureText(char).width;
+        glyphWidths.set(char, charWidth);
+      }
+      if (width > 0 && width + charWidth > contentWidth) {
+        rows++;
+        width = charWidth;
+      } else {
+        width += charWidth;
+      }
+    }
+    return rows;
+  });
+}
+
 // Turn a side's line count + active (non-expanded) collapse regions into an
 // ordered list of display items plus line↔row lookup tables.
-function buildSideLayout(side: Side, totalLines: number, regions: CollapseRegion[]): SideLayout {
+function buildSideLayout(side: Side, totalLines: number, regions: CollapseRegion[], rowSpans?: number[]): SideLayout {
   const items: DisplayItem[] = [];
   const rowOfLine = new Array(Math.max(totalLines + 1, 1)).fill(0);
   const lineOfRow: number[] = [];
@@ -275,8 +310,12 @@ function buildSideLayout(side: Side, totalLines: number, regions: CollapseRegion
     const segStart = line;
     const segEnd = nextStart - 1;
     items.push({ type: 'lines', index: index++, startLine: segStart, endLine: segEnd, startRow: row });
-    for (let l = segStart; l <= segEnd; l++) { rowOfLine[l] = row + (l - segStart); lineOfRow[row + (l - segStart)] = l; }
-    row += (segEnd - segStart + 1);
+    for (let l = segStart; l <= segEnd; l++) {
+      rowOfLine[l] = row;
+      const span = Math.max(1, rowSpans?.[l] ?? 1);
+      for (let visualRow = 0; visualRow < span; visualRow++) lineOfRow[row + visualRow] = l;
+      row += span;
+    }
     line = segEnd + 1;
   }
   rowOfLine[totalLines] = row;
@@ -341,8 +380,12 @@ function EditablePane(props: {
   layout: SideLayout;
   lineHeight: number;
   fontSize: number;
+  wrap: boolean;
   colors: DiffColors;
   paneRef: React.RefObject<HTMLDivElement>;
+  /** Report the pane's real client width. A visible vertical scrollbar can
+   *  make the two nominally equal panes have different wrapping widths. */
+  onViewportWidthChange?: (side: Side, width: number) => void;
   apiRef?: React.MutableRefObject<PaneHandle | null>;
   onScroll: (scrollTop: number, scrollLeft: number, fromSide: Side) => void;
   currentHunkIdx: number;
@@ -369,7 +412,7 @@ function EditablePane(props: {
 }) {
   const {
     side, text, onChange, hunks, layout,
-    lineHeight, fontSize, colors, paneRef, apiRef, onScroll,
+    lineHeight, fontSize, wrap, colors, paneRef, apiRef, onScroll, onViewportWidthChange,
     currentHunkIdx, toolbar, autoFocus, bottomPadding,
     matches, inlineRanges, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
   } = props;
@@ -458,6 +501,9 @@ function EditablePane(props: {
     ro.observe(el);
     return () => ro.disconnect();
   }, [paneRef]);
+  useEffect(() => {
+    if (availWidth > 0) onViewportWidthChange?.(side, availWidth);
+  }, [availWidth, onViewportWidthChange, side]);
 
   // Width of the text column: wide enough for the longest line so the pane can
   // scroll horizontally, but never narrower than the available space. Measure
@@ -485,7 +531,8 @@ function EditablePane(props: {
     // +2 leaves room for the caret at the end of the longest line.
     return Math.ceil(max) + textPadding + 2;
   }, [text, fontSize]);
-  const colWidth = Math.max(textContentWidth, Math.max(0, availWidth - numColWidth));
+  const availableTextWidth = Math.max(0, availWidth - numColWidth);
+  const colWidth = wrap ? availableTextWidth : Math.max(textContentWidth, availableTextWidth);
 
   // Index of the last visible text segment — its textarea is stretched to fill
   // the empty area below the document so clicking anywhere in the blank space
@@ -699,7 +746,7 @@ function EditablePane(props: {
                       position: 'absolute',
                       top: rowOfLine[ln] * lineHeight,
                       left: 0, right: 0,
-                      height: lineHeight,
+                      height: Math.max(1, rowOfLine[ln + 1] - rowOfLine[ln]) * lineHeight,
                       padding: '0 8px',
                       textAlign: side === 'left' ? 'right' : 'left',
                       color: gutterLineColor(k),
@@ -736,7 +783,7 @@ function EditablePane(props: {
                         position: 'absolute',
                         top: rowOfLine[ln] * lineHeight,
                         left: 0, right: 0,
-                        height: lineHeight,
+                        height: Math.max(1, rowOfLine[ln + 1] - rowOfLine[ln]) * lineHeight,
                         background: lineBg(k)
                       }}
                     />
@@ -770,14 +817,16 @@ function EditablePane(props: {
                         position: 'absolute',
                         top: rowOfLine[line] * lineHeight,
                         left: 0, right: 0,
-                        height: lineHeight,
+                        height: Math.max(1, rowOfLine[line + 1] - rowOfLine[line]) * lineHeight,
                         padding: '0 12px',
                         color: 'transparent',
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
                         fontSize: `${fontSize}px`,
                         lineHeight: `${lineHeight}px`,
                         tabSize: 2,
-                        whiteSpace: 'pre',
+                        whiteSpace: wrap ? 'pre-wrap' : 'pre',
+                        overflowWrap: wrap ? 'anywhere' : 'normal',
+                        wordBreak: wrap ? 'break-all' : 'normal',
                         overflow: 'hidden'
                       }}
                     >
@@ -811,11 +860,13 @@ function EditablePane(props: {
                   return (
                     <div key={`search-line-${line}`} style={{
                       position: 'absolute', top: rowOfLine[line] * lineHeight,
-                      left: 0, right: 0, height: lineHeight, padding: '0 12px',
+                      left: 0, right: 0, height: Math.max(1, rowOfLine[line + 1] - rowOfLine[line]) * lineHeight, padding: '0 12px',
                       color: 'transparent',
                       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
                       fontSize: `${fontSize}px`, lineHeight: `${lineHeight}px`,
-                      tabSize: 2, whiteSpace: 'pre', overflow: 'hidden'
+                      tabSize: 2, whiteSpace: wrap ? 'pre-wrap' : 'pre',
+                      overflowWrap: wrap ? 'anywhere' : 'normal',
+                      wordBreak: wrap ? 'break-all' : 'normal', overflow: 'hidden'
                     }}>
                       {parts}
                     </div>
@@ -857,7 +908,7 @@ function EditablePane(props: {
               // the document (down to the bottom of the scroll viewport, or the
               // document's natural end — whichever is lower) so a click anywhere
               // in the empty space still focuses this textarea and places a caret.
-              const naturalHeight = Math.max((item.endLine - item.startLine + 1) * lineHeight, lineHeight);
+              const naturalHeight = Math.max((rowOfLine[item.endLine + 1] - item.startRow) * lineHeight, lineHeight);
               const segHeight = item.index === lastLinesIndex
                 ? Math.max(naturalHeight, availHeight - segStartRow * lineHeight)
                 : naturalHeight;
@@ -903,7 +954,7 @@ function EditablePane(props: {
                   }}
                   placeholder={layout.items.length === 1 ? `${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…` : undefined}
                   spellCheck={false}
-                  wrap="off"
+                  wrap={wrap ? 'soft' : 'off'}
                   style={{
                     position: 'absolute', zIndex: 1,
                     top: segStartRow * lineHeight,
@@ -919,7 +970,9 @@ function EditablePane(props: {
                     fontSize: `${fontSize}px`,
                     lineHeight: `${lineHeight}px`,
                     tabSize: 2,
-                    whiteSpace: 'pre',
+                    whiteSpace: wrap ? 'pre-wrap' : 'pre',
+                    overflowWrap: wrap ? 'anywhere' : 'normal',
+                    wordBreak: wrap ? 'break-all' : 'normal',
                     overflow: 'hidden',
                     display: 'block'
                   }}
@@ -1240,6 +1293,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   // (default OFF — unchanged lines are shown until the user opts in). `expanded`
   // holds region ids the user has manually opened back up.
   const [collapseOn, setCollapseOn] = useState(false);
+  const [wrap, setWrap] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // The side + doc line the user is actively editing. Any collapse region
   // spanning this line stays unfolded so an edit that makes the region match
@@ -1254,6 +1308,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   // Full body width — the single full-width seam overlay uses it to place its
   // per-pane and ribbon-gap segments so the fold edge reads as one line.
   const [bodyWidth, setBodyWidth] = useState(0);
+  const [paneWidths, setPaneWidths] = useState<Record<Side, number>>({ left: 0, right: 0 });
 
   const leftPaneRef = useRef<HTMLDivElement>(null);
   const rightPaneRef = useRef<HTMLDivElement>(null);
@@ -1262,6 +1317,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const bodyRef = useRef<HTMLDivElement>(null);
   const actionMenuRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef<Side | null>(null);
+
+  const handlePaneWidthChange = useCallback((side: Side, width: number) => {
+    setPaneWidths(previous => previous[side] === width ? previous : { ...previous, [side]: width });
+  }, []);
 
   useEffect(() => {
     if (!actionMenuSide) return;
@@ -1333,13 +1392,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     return next;
   }, [collapseOn, hunks, leftTotalLines, rightTotalLines, expanded, activeEdit]);
 
+  const estimatedPaneWidth = Math.max(0, (bodyWidth - RIBBON_WIDTH) / 2);
+  const leftWrapContentWidth = Math.max(1, (paneWidths.left || estimatedPaneWidth) - 50 - 24);
+  const rightWrapContentWidth = Math.max(1, (paneWidths.right || estimatedPaneWidth) - 50 - 24);
+  const leftRowSpans = useMemo(
+    () => wrap ? computeWrappedRowSpans(leftText, leftWrapContentWidth, fontSize) : undefined,
+    [wrap, leftText, leftWrapContentWidth, fontSize]
+  );
+  const rightRowSpans = useMemo(
+    () => wrap ? computeWrappedRowSpans(rightText, rightWrapContentWidth, fontSize) : undefined,
+    [wrap, rightText, rightWrapContentWidth, fontSize]
+  );
   const leftLayout = useMemo(
-    () => buildSideLayout('left', leftTotalLines, collapseRegions),
-    [leftTotalLines, collapseRegions]
+    () => buildSideLayout('left', leftTotalLines, collapseRegions, leftRowSpans),
+    [leftTotalLines, collapseRegions, leftRowSpans]
   );
   const rightLayout = useMemo(
-    () => buildSideLayout('right', rightTotalLines, collapseRegions),
-    [rightTotalLines, collapseRegions]
+    () => buildSideLayout('right', rightTotalLines, collapseRegions, rightRowSpans),
+    [rightTotalLines, collapseRegions, rightRowSpans]
   );
 
   // Total foldable regions available (ignoring current expand state) — used to
@@ -1541,12 +1611,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         const otherLayout = fromSide === 'left' ? rightLayout : leftLayout;
         const fromRow = scrollTop / lineHeight;
         const rowInt = Math.floor(fromRow);
-        const frac = fromRow - rowInt;
-        const fromLine = (fromLayout.lineOfRow[rowInt] ?? rowInt) + frac;
+        const fromLine = fromLayout.lineOfRow[rowInt] ?? rowInt;
+        // Preserve the offset within a soft-wrapped logical line. Equal lines
+        // have identical wrap spans, while changed lines remain top-anchored.
+        const visualOffset = fromRow - (fromLayout.rowOfLine[fromLine] ?? rowInt);
         const toLine = mapLineToOther(fromLine, fromSide);
         const toInt = Math.floor(toLine);
-        const toFrac = toLine - toInt;
-        const otherRow = (otherLayout.rowOfLine[toInt] ?? toInt) + toFrac;
+        const otherSpan = Math.max(1, (otherLayout.rowOfLine[toInt + 1] ?? toInt + 1) - (otherLayout.rowOfLine[toInt] ?? toInt));
+        const otherRow = (otherLayout.rowOfLine[toInt] ?? toInt) + Math.min(visualOffset, otherSpan - 0.001);
         target = Math.max(0, Math.min(otherMax, otherRow * lineHeight));
       }
 
@@ -1706,7 +1778,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     inlineModify: '#fcd34d'
   };
 
-  const ribbonWidth = 44;
+  const ribbonWidth = RIBBON_WIDTH;
 
   const candidates = notes;
   const filteredCandidates = useMemo(() => {
@@ -2354,6 +2426,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <span className="compact-label">Only differences</span>
           </button>
 
+          <button
+            className={`dv-toggle-btn${wrap ? ' active' : ''}`}
+            onClick={() => setWrap(v => !v)}
+            title="Toggle line wrapping"
+            aria-pressed={wrap}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6h12a4 4 0 0 1 0 8H9"></path>
+              <polyline points="12 11 9 14 12 17"></polyline>
+              <path d="M4 18h3"></path>
+            </svg>
+            <span className="compact-label">Wrap lines</span>
+          </button>
+
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
 
           <button className="dv-icon-btn" onClick={onClose} title="Close (Esc)">
@@ -2375,8 +2461,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           layout={leftLayout}
           lineHeight={lineHeight}
           fontSize={fontSize}
+          wrap={wrap}
           colors={colors}
           paneRef={leftPaneRef}
+          onViewportWidthChange={handlePaneWidthChange}
           apiRef={leftApiRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
@@ -2430,8 +2518,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           layout={rightLayout}
           lineHeight={lineHeight}
           fontSize={fontSize}
+          wrap={wrap}
           colors={colors}
           paneRef={rightPaneRef}
+          onViewportWidthChange={handlePaneWidthChange}
           apiRef={rightApiRef}
           onScroll={handleScroll}
           currentHunkIdx={currentHunkIdx}
