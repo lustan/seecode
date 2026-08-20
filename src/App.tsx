@@ -128,6 +128,7 @@ export default function App({ isPopup = false }) {
 
     setAlertState({
       ...options,
+      theme,
       visible: true,
       onConfirm: () => {
         if (originalConfirm) originalConfirm();
@@ -234,9 +235,30 @@ export default function App({ isPopup = false }) {
   };
 
   const handleDeleteFolder = (id: string) => {
-    // Move folder's notes back to root, then remove the folder
-    setNotes(notes.map(n => n.folderId === id ? { ...n, folderId: undefined } : n));
-    setFolders(folders.filter(f => f.id !== id));
+    const folder = folders.find(f => f.id === id);
+    if (!folder) return;
+
+    const noteCount = notes.filter(n => n.folderId === id).length;
+    const deleteFolder = () => {
+      // Keep the files: removing a folder moves its contents back to the root.
+      setNotes(current => current.map(n => n.folderId === id ? { ...n, folderId: undefined } : n));
+      setFolders(current => current.filter(f => f.id !== id));
+    };
+
+    if (noteCount === 0) {
+      deleteFolder();
+      return;
+    }
+
+    showAlert({
+      type: 'warning',
+      title: `Delete “${folder.name}”?`,
+      message: `This folder contains ${noteCount} ${noteCount === 1 ? 'file' : 'files'}. The files won’t be deleted — they’ll be moved to the root list.`,
+      confirmText: 'Delete folder',
+      cancelText: 'Cancel',
+      onConfirm: deleteFolder,
+      onCancel: () => {}
+    });
   };
 
   const handleToggleFolder = (id: string) => {

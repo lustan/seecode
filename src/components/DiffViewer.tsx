@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Note } from '../App';
 import { buildInlineDiffs } from '../utils/inlineDiff.mjs';
+import { applyDiffHunk } from '../utils/applyDiffHunk.mjs';
 
 interface Props {
   notes: Note[];
@@ -21,6 +22,13 @@ type DiffOp =
 type RowKind = 'equal' | 'remove' | 'add' | 'modify';
 
 type Side = 'left' | 'right';
+
+type UndoApply = {
+  targetSide: Side;
+  previousText: string;
+  targetLine: number;
+  message: string;
+};
 
 // One search hit, addressed by 0-based line + column range within that line.
 type Match = { line: number; start: number; end: number };
@@ -942,18 +950,17 @@ function ConnectorRibbon(props: {
   rightScrollTop: number;
   colors: DiffColors;
   onHunkClick: (idx: number) => void;
+  onApplyHunk: (idx: number, sourceSide: Side) => void;
+  applyDisabled: boolean;
   /** Convert a document line to its display-row top on each side. */
   leftRowOfLine: number[];
   rightRowOfLine: number[];
 }) {
   const {
     width, height, hunks, currentHunkIdx, lineHeight,
-    leftScrollTop, rightScrollTop, colors, onHunkClick,
+    leftScrollTop, rightScrollTop, colors, onHunkClick, onApplyHunk, applyDisabled,
     leftRowOfLine, rightRowOfLine
   } = props;
-  // Navigation state is retained by the parent; connector colors stay uniform.
-  void currentHunkIdx;
-
   const ribbonColor = (k: RowKind): string => {
     if (k === 'modify') return colors.modifyBg;
     if (k === 'remove') return colors.removeBg;
@@ -1003,8 +1010,9 @@ function ConnectorRibbon(props: {
           `C ${width - cpOffset} ${rBotUse}, ${cpOffset} ${lBotUse}, 0 ${lBotUse} ` +
           `Z`;
 
+        const controlY = Math.max(2, Math.min(height - 22, ((lTopUse + lBotUse + rTopUse + rBotUse) / 4) - 10));
         return (
-          <g key={idx} onClick={() => onHunkClick(idx)} style={{ cursor: 'pointer' }}>
+          <g key={idx} className="dv-hunk-control" onClick={() => onHunkClick(idx)} style={{ cursor: 'pointer' }}>
             <path
               d={path}
               fill={fill}
@@ -1012,6 +1020,24 @@ function ConnectorRibbon(props: {
               opacity={1}
               pointerEvents="all"
             />
+            <foreignObject x={2} y={controlY} width={width - 4} height={20} style={{ overflow: 'visible' }}>
+              <div className="dv-apply-group" data-active={idx === currentHunkIdx ? 'true' : 'false'}>
+                <button
+                  className="dv-apply-btn"
+                  disabled={applyDisabled}
+                  title={applyDisabled ? 'Both sides reference the same note' : 'Apply right block to left'}
+                  aria-label="Apply right difference to left"
+                  onClick={e => { e.stopPropagation(); onApplyHunk(idx, 'right'); }}
+                >←</button>
+                <button
+                  className="dv-apply-btn"
+                  disabled={applyDisabled}
+                  title={applyDisabled ? 'Both sides reference the same note' : 'Apply left block to right'}
+                  aria-label="Apply left difference to right"
+                  onClick={e => { e.stopPropagation(); onApplyHunk(idx, 'left'); }}
+                >→</button>
+              </div>
+            </foreignObject>
           </g>
         );
       })}
@@ -1208,6 +1234,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
   const [actionMenuSide, setActionMenuSide] = useState<Side | null>(null);
+  const [undoApply, setUndoApply] = useState<UndoApply | null>(null);
 
   // Collapse-unchanged-fragments state. `collapseOn` toggles the whole feature
   // (default OFF — unchanged lines are shown until the user opts in). `expanded`
@@ -1233,7 +1260,26 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const leftApiRef = useRef<PaneHandle | null>(null);
   const rightApiRef = useRef<PaneHandle | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
   const syncingScrollRef = useRef<Side | null>(null);
+
+  useEffect(() => {
+    if (!actionMenuSide) return;
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (!actionMenuRef.current?.contains(event.target as Node)) {
+        setActionMenuSide(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionMenuSide(null);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePress);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [actionMenuSide]);
 
   const leftTitle = leftSrc.kind === 'note'
     ? (notes.find(n => n.id === leftSrc.noteId)?.title || 'Untitled')
@@ -1314,6 +1360,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   useEffect(() => {
     setCurrentHunkIdx(hunks.length > 0 ? 0 : -1);
   }, [hunks.length]);
+
+  useEffect(() => {
+    if (!undoApply) return;
+    const timer = window.setTimeout(() => setUndoApply(null), 7000);
+    return () => window.clearTimeout(timer);
+  }, [undoApply]);
 
   // Search matches per side. Recomputed when the text, query, or case-mode
   // changes.
@@ -1654,7 +1706,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     inlineModify: '#fcd34d'
   };
 
-  const ribbonWidth = 24;
+  const ribbonWidth = 44;
 
   const candidates = notes;
   const filteredCandidates = useMemo(() => {
@@ -1676,21 +1728,66 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
     setPickerSide(null);
     setPickerSearch('');
+    setUndoApply(null);
   };
 
   // Persist edits back to the note a side was loaded from. Blank (scratch)
   // sides have no backing note, so their edits stay local to the diff view.
-  const handleTextChange = (side: Side, value: string) => {
+  const handleTextChange = (side: Side, value: string, preserveUndo = false) => {
+    if (!preserveUndo) setUndoApply(null);
     const src = side === 'left' ? leftSrc : rightSrc;
     if (side === 'left') setLeftText(value);
     else setRightText(value);
     if (src.kind === 'note') onSaveNote?.(src.noteId, value);
   };
 
+  const sameBackingNote = leftSrc.kind === 'note' && rightSrc.kind === 'note' && leftSrc.noteId === rightSrc.noteId;
+
+  const focusAppliedLine = (side: Side, line: number) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const api = side === 'left' ? leftApiRef.current : rightApiRef.current;
+      const pane = side === 'left' ? leftPaneRef.current : rightPaneRef.current;
+      const layout = side === 'left' ? leftLayout : rightLayout;
+      api?.focusRange(line, 0, 0);
+      if (pane) {
+        const row = layout.rowOfLine[line] ?? line;
+        const top = Math.max(0, row * lineHeight - pane.clientHeight / 3);
+        pane.scrollTo({ top, behavior: 'smooth' });
+      }
+    }));
+  };
+
+  const handleApplyHunk = (idx: number, sourceSide: Side) => {
+    if (sameBackingNote) return;
+    const hunk = hunks[idx];
+    if (!hunk) return;
+    const result = applyDiffHunk(leftText, rightText, hunk, sourceSide);
+    const previousText = result.targetSide === 'left' ? leftText : rightText;
+    const direction = result.targetSide === 'left' ? 'left' : 'right';
+    setUndoApply({
+      targetSide: result.targetSide,
+      previousText,
+      targetLine: result.targetLine,
+      message: `Applied difference to ${direction}`
+    });
+    setActiveEdit(null);
+    handleTextChange(result.targetSide, result.text, true);
+    focusAppliedLine(result.targetSide, result.targetLine);
+  };
+
+  const undoLastApply = () => {
+    if (!undoApply) return;
+    const { targetSide, previousText, targetLine } = undoApply;
+    setUndoApply(null);
+    handleTextChange(targetSide, previousText, true);
+    focusAppliedLine(targetSide, targetLine);
+  };
+
   const swapSides = () => {
     const ls = leftSrc, lt = leftText;
     setLeftSrc(rightSrc); setLeftText(rightText);
     setRightSrc(ls); setRightText(lt);
+    setUndoApply(null);
   };
 
   const formatJsonOn = (side: Side) => {
@@ -1726,6 +1823,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       setRightText('');
       setRightSrc({ kind: 'blank' });
     }
+    setUndoApply(null);
   };
 
   // Floating find bar for a side — anchored top-right of the pane's scroll
@@ -1845,7 +1943,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
-        <div className="dv-action-wrap">
+        <div className="dv-action-wrap" ref={actionMenuSide === side ? actionMenuRef : undefined}>
           <button className="dv-toolbar-icon" onClick={() => setActionMenuSide(v => v === side ? null : side)} title="More actions" aria-label={`More actions for ${side} file`}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
               <circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle>
@@ -1923,6 +2021,48 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           font-variant-numeric: tabular-nums;
           min-width: 36px; text-align: center; letter-spacing: 0.02em;
         }
+        .dv-apply-group {
+          width: 40px; height: 20px; padding: 2px;
+          display: flex; align-items: center; justify-content: center; gap: 2px;
+          border: 1px solid ${colors.borderStrong}; border-radius: 6px;
+          background: ${colors.pickerBg};
+          box-shadow: 0 3px 10px rgba(0,0,0,${theme === 'dark' ? '0.34' : '0.12'});
+          opacity: 0; transform: scale(0.94);
+          transition: opacity 0.14s ease, transform 0.14s ease;
+          pointer-events: none;
+        }
+        .dv-hunk-control:hover .dv-apply-group,
+        .dv-apply-group[data-active="true"] {
+          opacity: 1; transform: scale(1); pointer-events: auto;
+        }
+        .dv-apply-btn {
+          width: 17px; height: 16px; padding: 0; border: 0; border-radius: 4px;
+          display: inline-flex; align-items: center; justify-content: center;
+          background: transparent; color: ${colors.textSec};
+          font: 800 13px/1 ui-sans-serif, system-ui, sans-serif;
+          cursor: pointer; transition: color 0.12s, background 0.12s;
+        }
+        .dv-apply-btn:hover:not(:disabled) {
+          color: ${colors.accent};
+          background: ${theme === 'dark' ? 'rgba(96,165,250,0.16)' : 'rgba(37,99,235,0.10)'};
+        }
+        .dv-apply-btn:focus-visible { outline: 1px solid ${colors.accent}; outline-offset: -1px; }
+        .dv-apply-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .dv-undo-toast {
+          position: fixed; left: 50%; bottom: 28px; z-index: 80;
+          transform: translateX(-50%); min-height: 38px; padding: 0 7px 0 13px;
+          display: flex; align-items: center; gap: 12px;
+          border: 1px solid ${colors.borderStrong}; border-radius: 9px;
+          background: ${colors.pickerBg}; color: ${colors.text};
+          box-shadow: 0 12px 34px rgba(0,0,0,0.32); backdrop-filter: blur(16px);
+          font-size: 11px; font-weight: 700; animation: diffSlide 0.16s ease-out;
+        }
+        .dv-undo-toast button {
+          height: 26px; padding: 0 8px; border: 0; border-radius: 6px;
+          background: transparent; color: ${colors.accent};
+          font-size: 11px; font-weight: 800; cursor: pointer;
+        }
+        .dv-undo-toast button:hover { background: ${theme === 'dark' ? 'rgba(96,165,250,0.12)' : 'rgba(37,99,235,0.08)'}; }
         .dv-chip {
           display: inline-flex; align-items: center; gap: 5px;
           padding: 3px 9px; border-radius: 999px;
@@ -2274,6 +2414,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               rightScrollTop={rightScrollTop}
               colors={colors}
               onHunkClick={idx => { setCurrentHunkIdx(idx); scrollToHunk(idx); }}
+              onApplyHunk={handleApplyHunk}
+              applyDisabled={sameBackingNote}
               leftRowOfLine={leftLayout.rowOfLine}
               rightRowOfLine={rightLayout.rowOfLine}
             />
@@ -2432,6 +2574,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
         )}
       </div>
+      {undoApply && (
+        <div className="dv-undo-toast" role="status">
+          <span>{undoApply.message}</span>
+          <button onClick={undoLastApply}>Undo</button>
+        </div>
+      )}
     </div>
   );
 }
