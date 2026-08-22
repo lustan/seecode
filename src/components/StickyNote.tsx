@@ -1,5 +1,6 @@
 
 import React, { useEffect, useState } from 'react';
+import { useI18n } from '../i18n';
 import MultiLanguageEditor from './MultiLanguageEditor';
 import { Note } from '../App';
 
@@ -21,6 +22,7 @@ function saveNotes(notes: Note[]) {
 }
 
 export default function StickyNote() {
+  const { t } = useI18n();
   const [note, setNote] = useState<Note | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -140,7 +142,7 @@ export default function StickyNote() {
                 }
               }
             }}
-            title="Format JSON"
+            title={t('sticky.formatJson')}
           >
             🔧
           </button>
@@ -181,7 +183,7 @@ export default function StickyNote() {
                 // 静默处理复制失败
               }
             }}
-            title="Copy content"
+            title={t('sticky.copy')}
           >
             📋
           </button>
@@ -190,7 +192,7 @@ export default function StickyNote() {
         <button 
           className="sticky-close"
           onClick={handleClose}
-          title="Close sticky note"
+          title={t('sticky.close')}
         >
           ×
         </button>

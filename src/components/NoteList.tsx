@@ -4,6 +4,7 @@ import { Note, Folder } from '../App';
 import { LanguageIcon } from './LanguageIcons';
 import { BRAND_FONT_FAMILY, BRAND_NAME, getBrandStyle } from './brandStyles.mjs';
 import { SupportedLanguage, getLanguageDisplayName } from '../utils/languageDetector';
+import { useI18n } from '../i18n';
 
 interface AddNoteOptions {
   folderId?: string;
@@ -110,6 +111,7 @@ export default function NoteList({
   isPopup,
   style
 }: Props) {
+  const { t } = useI18n();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [hoveredFolderId, setHoveredFolderId] = useState<string | null>(null);
   const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
@@ -494,7 +496,7 @@ export default function NoteList({
               }}
             />
           ) : (
-            <span title="Double-click to rename" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span title={t('sidebar.rename')} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {note.title}
             </span>
           )}
@@ -541,7 +543,7 @@ export default function NoteList({
             ref={addBtnRef}
             onClick={(e) => { e.stopPropagation(); toggleAddMenu(); }}
             className={`add-note-btn ${showAddMenu ? 'is-open' : ''}`}
-            title="New…"
+            title={t('sidebar.new')}
             style={{
               width: '26px',
               height: '26px',
@@ -599,7 +601,7 @@ export default function NoteList({
                 }}
               >
                 <span style={{ color: colors.folderAccent, display: 'flex' }}><Icons.FolderMenu /></span>
-                <span style={{ flex: 1 }}>New folder</span>
+                <span style={{ flex: 1 }}>{t('sidebar.newFolder')}</span>
               </button>
 
               <div style={{ height: 1, background: colors.menuDivider, margin: '4px 6px' }} />
@@ -613,7 +615,7 @@ export default function NoteList({
                 textTransform: 'uppercase',
                 opacity: 0.7
               }}>
-                New file
+                {t('sidebar.newFile')}
               </div>
 
               {FILE_TYPES.map(type => (
@@ -750,7 +752,7 @@ export default function NoteList({
                     />
                   ) : (
                     <span
-                      title="Double-click to rename"
+                      title={t('sidebar.rename')}
                       style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}
                     >
                       {folder.name}
@@ -771,7 +773,7 @@ export default function NoteList({
                       opacity: 0.6,
                       fontStyle: 'italic'
                     }}>
-                      Empty — drop files here
+                      {t('sidebar.emptyFolder')}
                     </div>
                   ) : (
                     folderNotes.map(note => renderNoteItem(note, true))
@@ -801,8 +803,8 @@ export default function NoteList({
             opacity: 0.5,
             lineHeight: 1.6
           }}>
-            No files yet.<br />
-            Click <strong style={{ color: colors.plusBtnText }}>+</strong> to create one.
+            {t('sidebar.empty')}<br />
+            {t('sidebar.emptyHint')}
           </div>
         )}
       </div>
@@ -873,7 +875,7 @@ export default function NoteList({
         >
           <button
             className="danger"
-            title="Delete file"
+            title={t('sidebar.deleteFile')}
             onClick={() => { onDelete(hoveredId); setHoveredId(null); }}
           ><Icons.Trash /></button>
         </div>,
@@ -892,12 +894,12 @@ export default function NoteList({
         >
           <button
             className="neutral"
-            title="New file in this folder"
+            title={t('sidebar.newFileInFolder')}
             onClick={() => { onAdd({ folderId: hoveredFolderId }); setHoveredFolderId(null); }}
           ><Icons.Plus /></button>
           <button
             className="danger"
-            title="Delete folder (files move to root)"
+            title={t('sidebar.deleteFolder')}
             onClick={() => { onDeleteFolder(hoveredFolderId); setHoveredFolderId(null); }}
           ><Icons.Trash /></button>
         </div>,

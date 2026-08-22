@@ -128,6 +128,17 @@ To build for production:
 npm run build
 ```
 
+### Adding an interface language
+
+Interface translations live in `src/i18n/locales`. To add a language:
+
+1. Copy `en.ts`, translate every value, and keep the same keys.
+2. Register the catalog and its selector option in `src/i18n/index.tsx`.
+3. Add the locale mapping in `src/i18n/locale.mjs`.
+4. Add a matching Chrome metadata catalog under `public/_locales`.
+
+The English catalog defines the TypeScript key contract, so a missing entry in a new catalog is reported during development. UI code should use `useI18n().t(...)` instead of embedding user-facing text.
+
 ---
 
 ## 📄 License

@@ -1,8 +1,9 @@
 {
-  "name": "Seecode: JSON Viewer & File Diff Tool",
+  "name": "__MSG_extensionName__",
   "version": "4.0.5",
   "manifest_version": 3,
-  "description": "A code editor extension with multi-language support, intelligent layout, JSON formatting, and file comparison.",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
   "permissions": ["storage"],
   "action": {
     "default_popup": "popup.html",

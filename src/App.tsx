@@ -8,6 +8,7 @@ import { LanguageIcon } from './components/LanguageIcons';
 import { CONFIG } from './config';
 import { resolveFeedbackPresentation } from './utils/feedbackRouting.mjs';
 import { getSidebarWidth } from './utils/layout.mjs';
+import { useI18n, LocalePreference } from './i18n';
 
 declare const chrome: any;
 
@@ -96,6 +97,7 @@ function getCompareFromQuery(): boolean {
 }
 
 export default function App({ isPopup = false }) {
+  const { t, preference, options: localeOptions, setPreference } = useI18n();
   const [notes, setNotes] = useState<Note[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -211,7 +213,7 @@ export default function App({ isPopup = false }) {
     const id = Date.now().toString();
     const newNote: Note = {
       id,
-      title: title || `Note ${notes.length + 1}`,
+      title: title || t('note.default', { number: notes.length + 1 }),
       content: '',
       folderId,
       language
@@ -226,12 +228,12 @@ export default function App({ isPopup = false }) {
 
   const handleAddFolder = () => {
     const id = `folder-${Date.now()}`;
-    const newFolder: Folder = { id, name: `Folder ${folders.length + 1}`, expanded: true };
+    const newFolder: Folder = { id, name: t('folder.default', { number: folders.length + 1 }), expanded: true };
     setFolders([...folders, newFolder]);
   };
 
   const handleRenameFolder = (id: string, newName: string) => {
-    setFolders(folders.map(f => f.id === id ? { ...f, name: newName.trim() || 'Untitled' } : f));
+    setFolders(folders.map(f => f.id === id ? { ...f, name: newName.trim() || t('note.untitled') } : f));
   };
 
   const handleDeleteFolder = (id: string) => {
@@ -252,10 +254,10 @@ export default function App({ isPopup = false }) {
 
     showAlert({
       type: 'warning',
-      title: `Delete “${folder.name}”?`,
-      message: `This folder contains ${noteCount} ${noteCount === 1 ? 'file' : 'files'}. The files won’t be deleted — they’ll be moved to the root list.`,
-      confirmText: 'Delete folder',
-      cancelText: 'Cancel',
+      title: t('folder.deleteTitle', { name: folder.name }),
+      message: t('folder.deleteMessage', { count: noteCount, files: t(noteCount === 1 ? 'files.one' : 'files.many') }),
+      confirmText: t('folder.deleteConfirm'),
+      cancelText: t('common.cancel'),
       onConfirm: deleteFolder,
       onCancel: () => {}
     });
@@ -273,7 +275,7 @@ export default function App({ isPopup = false }) {
   };
 
   const handleRename = (id: string, newTitle: string) => {
-    setNotes(notes.map(n => n.id === id ? { ...n, title: newTitle.trim() || 'Untitled' } : n));
+    setNotes(notes.map(n => n.id === id ? { ...n, title: newTitle.trim() || t('note.untitled') } : n));
     setEditingId(null);
   };
 
@@ -421,7 +423,7 @@ export default function App({ isPopup = false }) {
               <div className="header-context">
                 <div className="note-title-trigger" onClick={() => activeId && setEditingId(activeId)}>
                    <span style={{ fontWeight: 700, fontSize: '12px', letterSpacing: '-0.01em' }}>
-                     {activeNote?.title || 'No active note'}
+                     {activeNote?.title || t('note.noActive')}
                    </span>
                    <div style={{ opacity: 0.3 }}><Icons.Edit /></div>
                 </div>
@@ -432,7 +434,7 @@ export default function App({ isPopup = false }) {
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }} ref={settingsRef}>
             {isPopup && activeNote && (
                <>
-                 <button className="open-btn" title="Open Full Editor" onClick={() => {
+                 <button className="open-btn" title={t('settings.openFullEditor')} onClick={() => {
                    chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?activeId=${activeNote.id}` });
                    window.close();
                  }}><Icons.Maximize /></button>
@@ -443,7 +445,7 @@ export default function App({ isPopup = false }) {
             <button 
               className={`util-btn ${showSettings ? 'active' : ''}`} 
               onClick={() => setShowSettings(!showSettings)}
-              title="Settings"
+              title={t('settings.title')}
             >
               <Icons.Settings />
             </button>
@@ -464,18 +466,33 @@ export default function App({ isPopup = false }) {
                   </div>
                 </div>
 
+                <label className="menu-item" style={{ cursor: 'default' }}>
+                  <span style={{ flex: 1 }}>{t('settings.language')}</span>
+                  <select
+                    aria-label={t('settings.language')}
+                    value={preference}
+                    onChange={e => setPreference(e.target.value as LocalePreference)}
+                    style={{
+                      maxWidth: 94, border: `1px solid ${colors.border}`, borderRadius: 5,
+                      background: colors.badge, color: colors.text, fontSize: 10, padding: '3px 4px'
+                    }}
+                  >
+                    {localeOptions.map(option => <option key={option.value} value={option.value}>{t(option.labelKey)}</option>)}
+                  </select>
+                </label>
+
                 <a href={CONFIG.GITHUB_URL} target="_blank" className="menu-item">
-                  <Icons.Github /> GitHub Repository
+                  <Icons.Github /> {t('settings.github')}
                 </a>
                 <a href={CONFIG.FEEDBACK_URL} target="_blank" className="menu-item">
-                  <Icons.Message /> Send Feedback
+                  <Icons.Message /> {t('settings.feedback')}
                 </a>
 
                 <div style={{ 
                   marginTop: 4, paddingTop: 4, borderTop: `1px solid ${colors.border}`, 
                   textAlign: 'center', fontSize: '8px', color: colors.textSec, fontWeight: 800, opacity: 0.4 
                 }}>
-                  VERSION {CONFIG.VERSION}
+                  {t('settings.version', { version: CONFIG.VERSION })}
                 </div>
               </div>
             )}
@@ -502,7 +519,7 @@ export default function App({ isPopup = false }) {
           ) : (
             <div style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.1 }}>
                <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-               <p style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>Select a note</p>
+               <p style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>{t('note.select')}</p>
             </div>
           )}
           {toastState && <Toast {...toastState} onDone={closeToast} />}

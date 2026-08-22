@@ -17,6 +17,7 @@ import { Extension, StateEffect, StateField, RangeSetBuilder, Prec } from '@code
 import { SupportedLanguage, detectLanguage, getSupportedLanguages, getLanguageDisplayName } from '../utils/languageDetector';
 import DiffViewer from './DiffViewer';
 import type { Note } from '../App';
+import { useI18n } from '../i18n';
 
 declare const chrome: any;
 
@@ -101,6 +102,7 @@ interface Props {
 }
 
 export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, onSaveNote, showAlert }: Props) {
+  const { t } = useI18n();
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
   const [showDiff, setShowDiff] = useState(false);
@@ -149,7 +151,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
             from: node.from,
             to: node.to,
             severity: "error",
-            message: "JSON Syntax Error: Unexpected token or malformed structure"
+            message: t('editor.jsonSyntaxError')
           });
         }
       }
@@ -158,7 +160,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
     // Update error count for UI
     setErrorCount(diagnostics.length);
     return diagnostics;
-  }), [currentLanguage]);
+  }), [currentLanguage, t]);
 
   // JSON code folding with a count-aware placeholder: shows array length or
   // object key-count on the collapsed line. This is a foldConfig override that
@@ -247,12 +249,12 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
 
   const handleCopy = () => {
     navigator.clipboard.writeText(value);
-    showAlert?.({ type: 'success', message: 'Copied to clipboard', presentation: 'toast' });
+    showAlert?.({ type: 'success', message: t('editor.copied'), presentation: 'toast' });
   };
 
   const handleClear = () => {
     onChange('');
-    showAlert?.({ type: 'info', message: 'Editor cleared' });
+    showAlert?.({ type: 'info', message: t('editor.cleared') });
   };
 
   const handleFormat = () => {
@@ -260,13 +262,13 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       try {
         onChange(JSON.stringify(JSON.parse(value), null, 2));
       } catch(e) {
-        showAlert?.({ type: 'error', message: 'Invalid JSON' });
+        showAlert?.({ type: 'error', message: t('editor.invalidJson') });
       }
     } else if (currentLanguage === 'sql') {
       try {
         onChange(formatSql(value, { language: 'sql', tabWidth: 2, keywordCase: 'upper' }));
       } catch(e) {
-        showAlert?.({ type: 'error', message: 'Invalid SQL' });
+        showAlert?.({ type: 'error', message: t('editor.invalidSql') });
       }
     }
   };
@@ -346,9 +348,9 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       onChange(text.replace(regex, replaceText));
       performSearch(searchText, searchCaseSensitive, searchRegex, 'next');
     } catch {
-      showAlert?.({ type: 'error', message: 'Invalid search pattern' });
+      showAlert?.({ type: 'error', message: t('editor.invalidSearch') });
     }
-  }, [getEditorView, searchText, searchCaseSensitive, searchRegex, onChange, replaceText, performSearch, showAlert]);
+  }, [getEditorView, searchText, searchCaseSensitive, searchRegex, onChange, replaceText, performSearch, showAlert, t]);
 
   const searchKeyBindings = useMemo(
     () =>
@@ -768,7 +770,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       
       {errorCount > 0 && (
         <div className="error-badge">
-          <Icons.Alert /> {errorCount} {errorCount === 1 ? 'Error' : 'Errors'}
+          <Icons.Alert /> {errorCount} {t(errorCount === 1 ? 'editor.error' : 'editor.errors')}
         </div>
       )}
 
@@ -781,10 +783,10 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
           boxShadow: '0 8px 32px rgba(0,0,0,0.25)'
         }}>
           {canFormat && (
-            <button className="ed-btn" style={btnStyle} onClick={handleFormat} title={`Format ${currentLanguage.toUpperCase()}`}><Icons.Format /></button>
+            <button className="ed-btn" style={btnStyle} onClick={handleFormat} title={t('editor.format', { language: currentLanguage.toUpperCase() })}><Icons.Format /></button>
           )}
-          <button className="ed-btn" style={btnStyle} onClick={handleCopy} title="Copy All"><Icons.Copy /></button>
-          <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title="Toggle Wrap"><Icons.Wrap /></button>
+          <button className="ed-btn" style={btnStyle} onClick={handleCopy} title={t('editor.copyAll')}><Icons.Copy /></button>
+          <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title={t('editor.toggleWrap')}><Icons.Wrap /></button>
           {allNotes && allNotes.length > 0 && (
             <button
               className="ed-btn"
@@ -804,12 +806,12 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
                   setShowDiff(true);
                 }
               }}
-              title={isPopup ? 'Compare in new tab' : 'Compare with another file'}
+              title={t(isPopup ? 'editor.compareNewTab' : 'editor.compareFile')}
             >
               <Icons.Compare />
             </button>
           )}
-          <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title="Clear All"><Icons.Clear /></button>
+          <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title={t('editor.clearAll')}><Icons.Clear /></button>
         </div>
       )}
 
@@ -821,7 +823,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
               <input
                 autoFocus
                 className="plex-search-input"
-                placeholder="Find"
+                placeholder={t('editor.find')}
                 value={searchText}
                 onChange={e => setSearchText(e.target.value)}
                 onKeyDown={e => {
@@ -831,20 +833,20 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
                 }}
               />
               <span className="plex-search-count">{totalMatches > 0 ? `${currentMatch}/${totalMatches}` : ''}</span>
-              <button className="plex-tool-btn ghost" onClick={() => performSearch(searchText, searchCaseSensitive, searchRegex, 'prev')} title="Previous">
+              <button className="plex-tool-btn ghost" onClick={() => performSearch(searchText, searchCaseSensitive, searchRegex, 'prev')} title={t('editor.previous')}>
                 <Icons.ChevronUp />
               </button>
-              <button className="plex-tool-btn ghost" onClick={() => performSearch(searchText, searchCaseSensitive, searchRegex, 'next')} title="Next">
+              <button className="plex-tool-btn ghost" onClick={() => performSearch(searchText, searchCaseSensitive, searchRegex, 'next')} title={t('editor.next')}>
                 <Icons.ChevronDown />
               </button>
             </div>
-            <button className={`plex-tool-btn ${searchCaseSensitive ? 'active' : ''}`} onClick={() => setSearchCaseSensitive(!searchCaseSensitive)} title="Match Case">
+            <button className={`plex-tool-btn ${searchCaseSensitive ? 'active' : ''}`} onClick={() => setSearchCaseSensitive(!searchCaseSensitive)} title={t('editor.matchCase')}>
               <Icons.CaseSensitive />
             </button>
-            <button className={`plex-tool-btn ${searchRegex ? 'active' : ''}`} onClick={() => setSearchRegex(!searchRegex)} title="Use Regex">
+            <button className={`plex-tool-btn ${searchRegex ? 'active' : ''}`} onClick={() => setSearchRegex(!searchRegex)} title={t('editor.useRegex')}>
               <Icons.Regex />
             </button>
-            <button className="plex-tool-btn ghost" onClick={closeSearch} title="Close">
+            <button className="plex-tool-btn ghost" onClick={closeSearch} title={t('common.close')}>
               <Icons.Close />
             </button>
           </div>
@@ -855,12 +857,12 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
                 <span className="plex-find-icon"><Icons.Search /></span>
                 <input
                   className="plex-search-input"
-                  placeholder="Replace"
+                  placeholder={t('editor.replace')}
                   value={replaceText}
                   onChange={e => setReplaceText(e.target.value)}
                 />
               </div>
-              <button className="plex-action-btn primary" onClick={handleReplaceAll}>Replace All</button>
+              <button className="plex-action-btn primary" onClick={handleReplaceAll}>{t('editor.replaceAll')}</button>
             </div>
           )}
         </div>
@@ -912,7 +914,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       }}>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
           <span style={{ fontSize: '9px', fontWeight: '700', color: colors.textDim, opacity: 0.85, letterSpacing: '0.04em' }}>
-            {value.length.toLocaleString()} CHR
+            {t('editor.characters', { count: value.length.toLocaleString() })}
           </span>
           <div style={{ width: 1, height: 12, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }} />
           <div className="footer-lang-group" ref={languageMenuRef}>
@@ -925,7 +927,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
               {language
                 ? getLanguageDisplayName(currentLanguage)
                 : (autoDetectLanguage
-                  ? `Auto · ${getLanguageDisplayName(currentLanguage)}`
+                  ? `${t('editor.auto')} · ${getLanguageDisplayName(currentLanguage)}`
                   : getLanguageDisplayName(currentLanguage))}
               </span>
               <span className="chevron-icon">
@@ -942,7 +944,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
                     setShowLanguageMenu(false);
                   }}
                 >
-                  Auto-detect
+                  {t('editor.autoDetect')}
                 </button>
                 {getSupportedLanguages().map(l => (
                   <button

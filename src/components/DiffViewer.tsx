@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallba
 import type { Note } from '../App';
 import { buildInlineDiffs } from '../utils/inlineDiff.mjs';
 import { applyDiffHunk } from '../utils/applyDiffHunk.mjs';
+import { useI18n } from '../i18n';
 
 interface Props {
   notes: Note[];
@@ -418,6 +419,7 @@ function EditablePane(props: {
     currentHunkIdx, toolbar, autoFocus, bottomPadding,
     matches, inlineRanges, currentMatchIdx, onFocusPane, findBar, onExpandRegion, onActiveLine, onBlurPane
   } = props;
+  const { t } = useI18n();
   const numColWidth = 50;
   const gutterFontSize = Math.max(10, fontSize - 2);
   const textPadding = 24; // 12px left + 12px right on the textarea
@@ -885,7 +887,7 @@ function EditablePane(props: {
                     key={`strip-${item.index}`}
                     className="dv-fold-strip"
                     onClick={() => onExpandRegion(item.regionId)}
-                    title="Click to expand unchanged lines"
+                    title={t('diff.expandUnchanged')}
                     style={{
                       position: 'absolute', zIndex: 2,
                       top: item.row * lineHeight,
@@ -901,7 +903,7 @@ function EditablePane(props: {
                       <polyline points="7 8 3 12 7 16"></polyline>
                       <polyline points="17 8 21 12 17 16"></polyline>
                     </svg>
-                    {item.count} unchanged {item.count === 1 ? 'line' : 'lines'}
+                    {item.count === 1 ? t('diff.unchangedLine', { count: item.count }) : t('diff.unchangedLines', { count: item.count })}
                   </div>
                 );
               }
@@ -954,7 +956,7 @@ function EditablePane(props: {
                       onBlurPane?.();
                     });
                   }}
-                  placeholder={layout.items.length === 1 ? `${side === 'left' ? 'Left' : 'Right'} side — type or pick a file…` : undefined}
+                  placeholder={layout.items.length === 1 ? t(side === 'left' ? 'diff.leftPlaceholder' : 'diff.rightPlaceholder') : undefined}
                   spellCheck={false}
                   wrap={wrap ? 'soft' : 'off'}
                   style={{
@@ -1099,6 +1101,7 @@ function ApplyControlsOverlay(props: {
     leftRowOfLine, rightRowOfLine, leftScrollTop, rightScrollTop,
     disabled, onApplyHunk
   } = props;
+  const { t } = useI18n();
   if (width <= 0) return null;
 
   const gutterWidth = 50;
@@ -1126,7 +1129,8 @@ function ApplyControlsOverlay(props: {
         const left = pointsRight
           ? paneWidth - gutterWidth + 2
           : rightPaneStart + gutterWidth - buttonSize - 2;
-        const targetSide = pointsRight ? 'right' : 'left';
+        const sourceLabel = t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight');
+        const targetLabel = t(pointsRight ? 'diff.sideRight' : 'diff.sideLeft');
         return (
           <button
             key={`${idx}-${side}`}
@@ -1134,8 +1138,8 @@ function ApplyControlsOverlay(props: {
             data-active={idx === currentHunkIdx ? 'true' : 'false'}
             disabled={disabled}
             style={{ position: 'absolute', left, top }}
-            title={disabled ? 'Both sides reference the same note' : `Apply ${side} block to ${targetSide}`}
-            aria-label={`Apply ${side} difference to ${targetSide}`}
+            title={disabled ? t('diff.applyDisabled') : t('diff.applyBlock', { source: sourceLabel, target: targetLabel })}
+            aria-label={t('diff.applyDifference', { source: sourceLabel, target: targetLabel })}
             onClick={event => { event.stopPropagation(); onApplyHunk(idx, side); }}
           >
             <svg width="16" height="16" viewBox="0 0 18 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1329,6 +1333,7 @@ function SeamOverlay(props: {
 }
 
 export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onSaveNote, onClose }: Props) {
+  const { t } = useI18n();
   // Layout constants used by scroll math and the panes.
   const lineHeight = Math.round(fontSize * 1.55);
 
@@ -1408,10 +1413,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   }, [actionMenuSide]);
 
   const leftTitle = leftSrc.kind === 'note'
-    ? (notes.find(n => n.id === leftSrc.noteId)?.title || 'Untitled')
+    ? (notes.find(n => n.id === leftSrc.noteId)?.title || t('note.untitled'))
     : 'untitled-left.txt';
   const rightTitle = rightSrc.kind === 'note'
-    ? (notes.find(n => n.id === rightSrc.noteId)?.title || 'Untitled')
+    ? (notes.find(n => n.id === rightSrc.noteId)?.title || t('note.untitled'))
     : 'untitled.txt';
 
   const leftLineCount = leftText === '' ? 0 : leftText.split('\n').length;
@@ -1906,12 +1911,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     if (!hunk) return;
     const result = applyDiffHunk(leftText, rightText, hunk, sourceSide);
     const previousText = result.targetSide === 'left' ? leftText : rightText;
-    const direction = result.targetSide === 'left' ? 'left' : 'right';
+    const direction = t(result.targetSide === 'left' ? 'diff.sideLeft' : 'diff.sideRight');
     setUndoApply({
       targetSide: result.targetSide,
       previousText,
       targetLine: result.targetLine,
-      message: `Applied difference to ${direction}`
+      message: t('diff.appliedTo', { side: direction })
     });
     setActiveEdit(null);
     handleTextChange(result.targetSide, result.text, true);
@@ -1936,7 +1941,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const formatJsonOn = (side: Side) => {
     const text = side === 'left' ? leftText : rightText;
     if (!text.trim()) {
-      setFormatError({ side, message: 'Nothing to format' });
+      setFormatError({ side, message: t('diff.nothingToFormat') });
       return;
     }
     try {
@@ -1952,7 +1957,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         if (rightPaneRef.current) rightPaneRef.current.scrollLeft = 0;
       });
     } catch (e: any) {
-      setFormatError({ side, message: 'Invalid JSON' });
+      setFormatError({ side, message: t('editor.invalidJson') });
     }
   };
 
@@ -1984,7 +1989,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         <input
           ref={inputRef}
           className="dv-find-input"
-          placeholder="Find…"
+          placeholder={t('diff.findPlaceholder')}
           value={search.query}
           onChange={e => setSearch(s => ({ ...s, query: e.target.value, currentIdx: e.target.value ? 0 : -1 }))}
           onKeyDown={e => {
@@ -1999,21 +2004,21 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         <button
           className={`dv-find-toggle${search.caseSensitive ? ' active' : ''}`}
           onClick={() => setSearch(s => ({ ...s, caseSensitive: !s.caseSensitive }))}
-          title="Match case"
+          title={t('editor.matchCase')}
         >
           Aa
         </button>
-        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, -1)} disabled={total === 0} title="Previous (Shift+Enter)">
+        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, -1)} disabled={total === 0} title={t('diff.prevMatch')}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="18 15 12 9 6 15"></polyline>
           </svg>
         </button>
-        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, 1)} disabled={total === 0} title="Next (Enter)">
+        <button className="dv-find-nav" onMouseDown={e => e.preventDefault()} onClick={() => stepMatch(side, 1)} disabled={total === 0} title={t('diff.nextMatch')}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="6 9 12 15 18 9"></polyline>
           </svg>
         </button>
-        <button className="dv-find-nav" onClick={() => closeFind(side)} title="Close (Esc)">
+        <button className="dv-find-nav" onClick={() => closeFind(side)} title={t('diff.closeEsc')}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -2027,12 +2032,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const src = side === 'left' ? leftSrc : rightSrc;
     const title = side === 'left' ? leftTitle : rightTitle;
     const isNote = src.kind === 'note';
-    const role = side === 'left' ? 'Before' : 'After';
+    const role = side === 'left' ? t('diff.before') : t('diff.after');
     return (
       <button
         className="dv-file-chip"
         onClick={() => { setPickerSide(side); setPickerSearch(''); }}
-        title="Choose a file for this side"
+        title={t('diff.chooseFile')}
       >
         <span className="dv-file-role">{role}</span>
         {isNote ? (
@@ -2068,26 +2073,26 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           fontSize: 11, fontWeight: 700, color: colors.textSec,
           letterSpacing: 0.01
         }}>
-          {side === 'left' ? 'Before' : 'After'}
+          {side === 'left' ? t('diff.before') : t('diff.after')}
         </span>
         <span style={{ fontSize: 10, color: colors.textDim, fontWeight: 600 }}>
-          {text === '' ? 'Empty' : `${text.split('\n').length} lines / ${text.length} chars`}
+          {text === '' ? t('diff.empty') : t('diff.lineInfo', { lines: text.split('\n').length, chars: text.length })}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 2 }}>
-        <button className="dv-toolbar-icon" onClick={() => openFind(side)} title="Find (Ctrl+F)" aria-label={`Find in ${side} file`}>
+        <button className="dv-toolbar-icon" onClick={() => openFind(side)} title={t('diff.findShortcut')} aria-label={t('diff.findInFile', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="11" cy="11" r="7"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
         </button>
-        <button className="dv-toolbar-icon" onClick={() => navigator.clipboard.writeText(text)} title="Copy all" aria-label={`Copy ${side} file`}>
+        <button className="dv-toolbar-icon" onClick={() => navigator.clipboard.writeText(text)} title={t('editor.copyAll')} aria-label={t('diff.copySide', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
         <div className="dv-action-wrap" ref={actionMenuSide === side ? actionMenuRef : undefined}>
-          <button className="dv-toolbar-icon" onClick={() => setActionMenuSide(v => v === side ? null : side)} title="More actions" aria-label={`More actions for ${side} file`}>
+          <button className="dv-toolbar-icon" onClick={() => setActionMenuSide(v => v === side ? null : side)} title={t('diff.moreActions')} aria-label={t('diff.moreActionsSide', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
               <circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle>
             </svg>
@@ -2096,11 +2101,11 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <div className={`dv-action-menu ${side}`}>
               <button onClick={() => { formatJsonOn(side); setActionMenuSide(null); }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
-                Format JSON
+                {t('diff.formatJson')}
               </button>
               <button className="danger" onClick={() => { clearSide(side); setActionMenuSide(null); }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                Clear side
+                {t('diff.clearSide')}
               </button>
             </div>
           )}
@@ -2411,13 +2416,13 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               <circle cx="6" cy="18" r="3"></circle>
               <path d="M18 9a9 9 0 0 1-9 9"></path>
             </svg>
-            <span className="dv-brand-text" style={{ color: colors.text, fontSize: 12, fontWeight: 800, letterSpacing: '-0.01em' }}>File compare</span>
+            <span className="dv-brand-text" style={{ color: colors.text, fontSize: 12, fontWeight: 800, letterSpacing: '-0.01em' }}>{t('diff.title')}</span>
           </div>
 
           <div style={{ width: 1, height: 22, background: colors.border }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
             {fileChip('left')}
-            <button className="dv-icon-btn" onClick={swapSides} title="Swap sides" style={{ width: 26, height: 26 }}>
+            <button className="dv-icon-btn" onClick={swapSides} title={t('diff.swapSides')} style={{ width: 26, height: 26 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="17 1 21 5 17 9"></polyline>
                 <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
@@ -2430,7 +2435,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }} title="Difference summary">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }} title={t('diff.summary')}>
             <span className="dv-chip" style={{ background: colors.removeBg, color: colors.removeStrong }}>
               −{stats.removed}
             </span>
@@ -2453,20 +2458,20 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               className="dv-nav-btn"
               onClick={goPrevDiff}
               disabled={hunks.length === 0}
-              title="Previous difference (Shift+F7)"
+              title={t('diff.prevDiff')}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="18 15 12 9 6 15"></polyline>
               </svg>
             </button>
             <span className="dv-nav-counter">
-              {hunks.length === 0 ? 'No differences' : `${currentHunkIdx + 1} of ${hunks.length}`}
+              {hunks.length === 0 ? t('diff.noDifferences') : t('diff.diffCounter', { current: currentHunkIdx + 1, total: hunks.length })}
             </span>
             <button
               className="dv-nav-btn"
               onClick={goNextDiff}
               disabled={hunks.length === 0}
-              title="Next difference (F7)"
+              title={t('diff.nextDiff')}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
@@ -2479,19 +2484,19 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             onClick={() => { setCollapseOn(v => !v); setExpanded(new Set()); }}
             disabled={foldableCount === 0}
             style={foldableCount === 0 ? { opacity: 0.4, cursor: 'not-allowed' } : undefined}
-            title="Show only differences by collapsing unchanged lines"
+            title={t('diff.onlyDifferencesTitle')}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
               <polyline points="7 4 12 9 17 4"></polyline>
               <polyline points="7 20 12 15 17 20"></polyline>
             </svg>
-            <span className="compact-label">Only differences</span>
+            <span className="compact-label">{t('diff.onlyDifferences')}</span>
           </button>
 
           <button
             className={`dv-toggle-btn${wrap ? ' active' : ''}`}
             onClick={() => setWrap(v => !v)}
-            title="Toggle line wrapping"
+            title={t('editor.toggleWrap')}
             aria-pressed={wrap}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -2499,12 +2504,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
               <polyline points="12 11 9 14 12 17"></polyline>
               <path d="M4 18h3"></path>
             </svg>
-            <span className="compact-label">Wrap lines</span>
+            <span className="compact-label">{t('diff.wrapLines')}</span>
           </button>
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
 
-          <button className="dv-icon-btn" onClick={onClose} title="Close (Esc)">
+          <button className="dv-icon-btn" onClick={onClose} title={t('diff.closeEsc')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -2660,7 +2665,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                 justifyContent: 'space-between', borderBottom: `1px solid ${colors.border}`
               }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: colors.text, letterSpacing: 0.02 }}>
-                  Choose file for <span style={{ color: colors.accent }}>{pickerSide === 'left' ? 'left' : 'right'}</span> side
+                  {t('diff.chooseForSide', {
+                    side: t(pickerSide === 'left' ? 'diff.sideLeft' : 'diff.sideRight')
+                  })}
                 </div>
                 <button className="dv-icon-btn" onClick={() => setPickerSide(null)} style={{ width: 24, height: 24 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -2679,7 +2686,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                 <input
                   autoFocus
                   className="dv-picker-search"
-                  placeholder="Search files by name or content…"
+                  placeholder={t('diff.searchFiles')}
                   value={pickerSearch}
                   onChange={e => setPickerSearch(e.target.value)}
                 />
@@ -2694,14 +2701,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                       <line x1="12" y1="5" x2="12" y2="19"></line>
                       <line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
-                    New blank file
+                    {t('diff.newBlankFile')}
                   </div>
-                  <div className="dv-picker-item-meta">Start with an empty scratch buffer</div>
+                  <div className="dv-picker-item-meta">{t('diff.blankHint')}</div>
                 </div>
 
                 {filteredCandidates.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: colors.textDim, fontSize: 12, fontWeight: 600 }}>
-                    {candidates.length === 0 ? 'No notes available.' : 'No matching files.'}
+                    {t(candidates.length === 0 ? 'diff.noNotes' : 'diff.noMatches')}
                   </div>
                 ) : (
                   filteredCandidates.map(n => {
@@ -2726,12 +2733,12 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                               padding: '1px 6px', borderRadius: 4,
                               background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)'
                             }}>
-                              ALREADY ON OTHER SIDE
+                              {t('diff.alreadyOtherSide')}
                             </span>
                           )}
                         </div>
                         <div className="dv-picker-item-meta">
-                          {n.content.split('\n').length} lines · {n.content.length} chars
+                          {t('diff.noteMeta', { lines: n.content.split('\n').length, chars: n.content.length })}
                           {n.language ? ` · ${n.language}` : ''}
                         </div>
                       </div>
@@ -2746,7 +2753,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       {undoApply && (
         <div className="dv-undo-toast" role="status">
           <span>{undoApply.message}</span>
-          <button onClick={undoLastApply}>Undo</button>
+          <button onClick={undoLastApply}>{t('diff.undo')}</button>
         </div>
       )}
     </div>

@@ -3,6 +3,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import { I18nProvider } from './i18n';
 
 // Fix: Declare chrome global for the browser to avoid TypeScript compilation errors
 declare const chrome: any;
@@ -42,6 +43,6 @@ function PopupRoot() {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <PopupRoot />
+    <I18nProvider><PopupRoot /></I18nProvider>
   </React.StrictMode>
 );
