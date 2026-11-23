@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Note, Folder } from '../App';
 import { LanguageIcon } from './LanguageIcons';
-import { BRAND_FONT_FAMILY, BRAND_NAME, getBrandStyle } from './brandStyles.mjs';
+import { BRAND_ACCENT_LENGTH, BRAND_FONT_FAMILY, BRAND_NAME, getBrandStyle } from './brandStyles.mjs';
 import { SupportedLanguage, getLanguageDisplayName } from '../utils/languageDetector';
 
 interface AddNoteOptions {
@@ -35,14 +35,13 @@ const Icons = {
   Code: () => (
     <img
       src="/icon.svg"
-      alt="Seecode Logo"
+      alt={`${BRAND_NAME} Logo`}
       style={{
-        width: 18,
-        height: 18,
+        width: 22,
+        height: 22,
         flexShrink: 0,
         marginRight: 8,
-        display: 'block',
-        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))'
+        display: 'block'
       }}
     />
   ),
@@ -532,7 +531,7 @@ export default function NoteList({
               whiteSpace: 'nowrap',
               textShadow: brandStyle.glow
             }}>
-            <span style={{ color: brandStyle.accent }}>{BRAND_NAME.slice(0, 3)}</span>{BRAND_NAME.slice(3)}
+            <span style={{ color: brandStyle.accent }}>{BRAND_NAME.slice(0, BRAND_ACCENT_LENGTH)}</span>{BRAND_NAME.slice(BRAND_ACCENT_LENGTH)}
           </span>
         </div>
 

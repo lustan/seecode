@@ -1,9 +1,9 @@
 
-# Seecode 🚀
+# DiffPad
 
-> **v4.0.0** — Code editor & file diff Chrome extension.
+> **v4.0.5** — Code editor & file diff Chrome extension.
 
-Seecode is a high-performance, feature-rich Chrome extension designed for developers who need a reliable, JSON formatting, multi-language note-taking, and **side-by-side file/note comparison**.
+DiffPad is a high-performance, feature-rich Chrome extension designed for developers who need a reliable, JSON formatting, multi-language note-taking, and **side-by-side file/note comparison**.
 
 ![Logo](public/icon.svg)
 
@@ -12,7 +12,7 @@ Seecode is a high-performance, feature-rich Chrome extension designed for develo
 ## 🆕 What's New in v4.0.0
 
 ### 🔍 IDEA-Style File Compare (Highlight Feature)
-Seecode now ships with a full-featured **two-pane diff viewer** inspired by JetBrains IDEA's "Compare Files" tool — perfect for diffing JSON payloads, code snippets, or any two notes side-by-side without leaving the browser.
+DiffPad now ships with a full-featured **two-pane diff viewer** inspired by JetBrains IDEA's "Compare Files" tool — perfect for diffing JSON payloads, code snippets, or any two notes side-by-side without leaving the browser.
 
 * **🪞 Dual editable panes** — both sides are live textareas. Type, paste, or pick any existing note from the file chip. Edits update the diff in real time.
 * **🧬 LCS-based line diff** — accurate longest-common-subsequence algorithm groups changes into IDEA-style **hunks** (`add`, `remove`, `modify`).

@@ -1,12 +1,12 @@
 {
-  "name": "Seecode: JSON Viewer & File Diff Tool",
+  "name": "DiffPad: JSON Viewer & File Diff Tool",
   "version": "4.0.5",
   "manifest_version": 3,
   "description": "A code editor extension with multi-language support, intelligent layout, JSON formatting, and file comparison.",
   "permissions": ["storage"],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Seecode"
+    "default_title": "DiffPad"
   },
   "icons": {
     "16": "icon16.png",

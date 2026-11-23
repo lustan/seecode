@@ -6,6 +6,6 @@ export const CONFIG = {
   FEEDBACK_URL: 'https://github.com/lustan/seecode/issues',
   
   // Other configurable options can be added here
-  APP_NAME: 'Seecode',
+  APP_NAME: 'DiffPad',
   VERSION: '4.0.4'
 };
