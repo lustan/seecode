@@ -7,5 +7,5 @@ export const CONFIG = {
   
   // Other configurable options can be added here
   APP_NAME: 'DiffPad',
-  VERSION: '4.0.4'
+  VERSION: '4.0.6'
 };

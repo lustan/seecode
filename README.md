@@ -1,7 +1,7 @@
 
 # DiffPad
 
-> **v4.0.5** — Code editor & file diff Chrome extension.
+> **v4.0.6** — Code editor & file diff Chrome extension.
 
 DiffPad is a high-performance, feature-rich Chrome extension designed for developers who need a reliable, JSON formatting, multi-language note-taking, and **side-by-side file/note comparison**.
 
