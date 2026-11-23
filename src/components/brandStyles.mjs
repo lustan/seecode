@@ -1,4 +1,5 @@
-export const BRAND_NAME = 'Seecode';
+export const BRAND_NAME = 'DiffPad';
+export const BRAND_ACCENT_LENGTH = 4;
 export const BRAND_FONT_FAMILY = '"Space Grotesk", "Inter", "Segoe UI", sans-serif';
 
 export function getBrandStyle(theme) {

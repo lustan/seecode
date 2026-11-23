@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Note } from '../App';
 import { buildInlineDiffs } from '../utils/inlineDiff.mjs';
-import { applyDiffHunk } from '../utils/applyDiffHunk.mjs';
+import { applyDiffHunk, spliceSegmentLines, textToLines } from '../utils/applyDiffHunk.mjs';
 import { useI18n } from '../i18n';
 
 interface Props {
@@ -428,7 +428,7 @@ function EditablePane(props: {
   const { rowOfLine, totalRows } = layout;
   const docHeight = Math.max(totalRows * lineHeight, 0);
 
-  const docLines = useMemo(() => text.split('\n'), [text]);
+  const docLines = useMemo(() => textToLines(text), [text]);
 
   // A line is folded away when its display row is a strip row (which reports
   // the region's first line, not this line).
@@ -456,8 +456,6 @@ function EditablePane(props: {
   // can restore it after the re-diff possibly re-segments the pane.
   const handleSegmentChange = useCallback((startLine: number, endLine: number, el: HTMLTextAreaElement) => {
     const value = el.value;
-    const before = docLines.slice(0, startLine);
-    const after = endLine < startLine ? docLines.slice(startLine) : docLines.slice(endLine + 1);
     // Absolute offset of the caret in the whole document = (chars in all lines
     // before this segment) + (caret offset within the segment).
     let segStartOffset = 0;
@@ -468,8 +466,8 @@ function EditablePane(props: {
     // would collapse it out from under the cursor.
     const caretDocLine = startLine + (value.slice(0, el.selectionStart).split('\n').length - 1);
     onActiveLine?.(caretDocLine);
-    onChange([...before, ...value.split('\n'), ...after].join('\n'));
-  }, [docLines, onChange, onActiveLine]);
+    onChange(spliceSegmentLines(text, startLine, endLine, value));
+  }, [docLines, text, onChange, onActiveLine]);
 
   // Locate the segment holding `line`, focus its textarea and select [start,end].
   const focusRange = useCallback((line: number, start: number, end: number) => {
@@ -1483,6 +1481,10 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     () => buildSideLayout('right', rightTotalLines, collapseRegions, rightRowSpans),
     [rightTotalLines, collapseRegions, rightRowSpans]
   );
+  const leftLayoutRef = useRef(leftLayout);
+  const rightLayoutRef = useRef(rightLayout);
+  leftLayoutRef.current = leftLayout;
+  rightLayoutRef.current = rightLayout;
 
   // Total foldable regions available (ignoring current expand state) — used to
   // decide whether to show the "expand all" affordance.
@@ -1566,20 +1568,19 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   const stepMatch = useCallback((side: Side, dir: 1 | -1) => {
     const matches = side === 'left' ? leftMatches : rightMatches;
     if (matches.length === 0) return;
+    const current = side === 'left' ? leftSearch : rightSearch;
     const setSearch = side === 'left' ? setLeftSearch : setRightSearch;
-    setSearch(s => {
-      const base = s.currentIdx < 0 ? (dir === 1 ? -1 : 0) : s.currentIdx;
-      const next = (base + dir + matches.length) % matches.length;
-      revealMatch(side, matches[next]);
-      return { ...s, currentIdx: next };
-    });
+    const base = current.currentIdx < 0 ? (dir === 1 ? -1 : 0) : current.currentIdx;
+    const next = (base + dir + matches.length) % matches.length;
+    setSearch(s => ({ ...s, currentIdx: next }));
+    revealMatch(side, matches[next]);
     // Keep keyboard input in the find field after Enter/F3 and after clicking
     // the navigation arrows, so repeated Enter continues through all matches.
     requestAnimationFrame(() => {
       const input = side === 'left' ? leftFindInputRef.current : rightFindInputRef.current;
       input?.focus({ preventScroll: true });
     });
-  }, [leftMatches, rightMatches, revealMatch]);
+  }, [leftMatches, rightMatches, leftSearch, rightSearch, revealMatch]);
 
   // Open the find bar for a side and focus its input.
   const openFind = useCallback((side: Side) => {
@@ -1876,6 +1877,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     }
     setPickerSide(null);
     setPickerSearch('');
+    setExpanded(new Set());
+    setActiveEdit(null);
     setUndoApply(null);
   };
 
@@ -1895,7 +1898,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const api = side === 'left' ? leftApiRef.current : rightApiRef.current;
       const pane = side === 'left' ? leftPaneRef.current : rightPaneRef.current;
-      const layout = side === 'left' ? leftLayout : rightLayout;
+      const layout = side === 'left' ? leftLayoutRef.current : rightLayoutRef.current;
       api?.focusRange(line, 0, 0);
       if (pane) {
         const row = layout.rowOfLine[line] ?? line;
@@ -1935,6 +1938,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const ls = leftSrc, lt = leftText;
     setLeftSrc(rightSrc); setLeftText(rightText);
     setRightSrc(ls); setRightText(lt);
+    setExpanded(new Set());
+    setActiveEdit(null);
     setUndoApply(null);
   };
 
@@ -1971,6 +1976,8 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       setRightText('');
       setRightSrc({ kind: 'blank' });
     }
+    setExpanded(new Set());
+    setActiveEdit(null);
     setUndoApply(null);
   };
 
@@ -2085,7 +2092,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
         </button>
-        <button className="dv-toolbar-icon" onClick={() => navigator.clipboard.writeText(text)} title={t('editor.copyAll')} aria-label={t('diff.copySide', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
+        <button className="dv-toolbar-icon" onClick={() => navigator.clipboard?.writeText(text).catch(() => {})} title={t('editor.copyAll')} aria-label={t('diff.copySide', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>

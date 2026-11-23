@@ -1,4 +1,4 @@
 {
-  "extensionName": { "message": "Seecode：JSON 查看器与文件对比工具" },
+  "extensionName": { "message": "DiffPad：JSON 查看器与文件对比工具" },
   "extensionDescription": { "message": "支持多语言、智能布局、JSON 格式化和文件对比的代码编辑器扩展。" }
 }

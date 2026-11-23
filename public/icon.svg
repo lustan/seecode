@@ -1,17 +1,27 @@
-<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!--
-    Content bbox after edits:
-      crescent x: ~8.7 .. 91, y: 18 .. 110  (outer r=54, inner r=47 — thinner)
-      bolt     centered near (90, 64), ~28x44 — larger
-  -->
-  <g transform="translate(64 64) scale(1.18) translate(-61.85 -64)">
-    <!-- Blue crescent "C" — thinner (inner radius 47, outer 54) -->
-    <path d="M 91 18 A 54 54 0 1 0 91 110 A 47 47 0 1 1 91 18 Z"
-          fill="#1F73E0" />
+<svg width="128" height="128" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dp-bg" x1="2" y1="0" x2="30" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#172540" />
+      <stop offset="100%" stop-color="#0B1120" />
+    </linearGradient>
+    <linearGradient id="dp-flow" x1="6" y1="10" x2="26" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#2DD4BF" />
+      <stop offset="100%" stop-color="#22C55E" />
+    </linearGradient>
+  </defs>
 
-    <!-- Yellow lightning bolt — sharp top + bottom, centered near (90, 64) -->
-    <path d="M 98 38 L 78 68 L 90 68 L 82 92 L 104 60 L 92 60 Z"
-          fill="#FFC72C"
-          stroke="#E0A800" stroke-width="1.2" stroke-linejoin="round" />
-  </g>
+  <!-- Full-bleed pixel-snapped squircle base -->
+  <rect x="0" y="0" width="32" height="32" rx="8" fill="url(#dp-bg)" />
+  <rect x="0.5" y="0.5" width="31" height="31" rx="7.5" stroke="#38BDF8" stroke-opacity="0.32" stroke-width="1" />
+
+  <!-- Secondary symmetric pane blocks -->
+  <rect x="19" y="8" width="7" height="6" rx="2" fill="#E2E8F0" />
+  <rect x="6" y="18" width="7" height="6" rx="2" fill="#CBD5E1" />
+
+  <!-- Uniform-thickness IDEA-style diff connector ribbon (top-left -> bottom-right) -->
+  <path
+    d="M 8 8 H 13 C 17.5 8, 16.5 17, 19 18 H 24 A 2 2 0 0 1 26 20 V 22 A 2 2 0 0 1 24 24 H 19 C 14.5 24, 15.5 15, 13 14 H 8 A 2 2 0 0 1 6 12 V 10 A 2 2 0 0 1 8 8 Z"
+    fill="url(#dp-flow)"
+  />
 </svg>

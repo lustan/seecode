@@ -42,20 +42,34 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const locale = resolveLocale(preference, systemLocales, Object.keys(localeCatalogs)) as AppLocale;
 
   useEffect(() => {
-    chrome.storage.local.get([STORAGE_KEY], (result: Record<string, LocalePreference>) => {
-      const stored = result[STORAGE_KEY];
-      if (stored === 'system' || stored in localeCatalogs) setPreferenceState(stored);
-    });
+    const storage = typeof chrome !== 'undefined' ? chrome.storage : undefined;
+    const applyPreference = (stored: string | null | undefined) => {
+      if (stored === 'system' || (stored && Object.hasOwn(localeCatalogs, stored))) {
+        setPreferenceState(stored as LocalePreference);
+      }
+    };
+    if (storage?.local) {
+      storage.local.get([STORAGE_KEY], (result: Record<string, LocalePreference>) => {
+        applyPreference(result[STORAGE_KEY]);
+      });
+    } else {
+      try { applyPreference(window.localStorage.getItem(STORAGE_KEY)); } catch {}
+    }
     const onLanguageChange = () => setSystemLocales(getSystemLocales());
     const onStorageChange = (changes: Record<string, { newValue?: LocalePreference }>, area: string) => {
       const next = changes[STORAGE_KEY]?.newValue;
-      if (area === 'local' && next && (next === 'system' || next in localeCatalogs)) setPreferenceState(next);
+      if (area === 'local') applyPreference(next);
+    };
+    const onWebStorageChange = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY) applyPreference(event.newValue);
     };
     window.addEventListener('languagechange', onLanguageChange);
-    chrome.storage.onChanged.addListener(onStorageChange);
+    storage?.onChanged?.addListener(onStorageChange);
+    if (!storage?.local) window.addEventListener('storage', onWebStorageChange);
     return () => {
       window.removeEventListener('languagechange', onLanguageChange);
-      chrome.storage.onChanged.removeListener(onStorageChange);
+      storage?.onChanged?.removeListener(onStorageChange);
+      window.removeEventListener('storage', onWebStorageChange);
     };
   }, []);
 
@@ -65,7 +79,11 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
   const setPreference = useCallback((next: LocalePreference) => {
     setPreferenceState(next);
-    chrome.storage.local.set({ [STORAGE_KEY]: next });
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      chrome.storage.local.set({ [STORAGE_KEY]: next });
+    } else {
+      try { window.localStorage.setItem(STORAGE_KEY, next); } catch {}
+    }
   }, []);
 
   const t = useCallback((key: TranslationKey, params?: Record<string, string | number>) => {

@@ -32,6 +32,7 @@ const en = {
   'sidebar.deleteFolder': 'Delete folder (files move to root)',
   'editor.jsonSyntaxError': 'JSON Syntax Error: Unexpected token or malformed structure',
   'editor.copied': 'Copied to clipboard',
+  'editor.copyFailed': 'Failed to copy to clipboard',
   'editor.cleared': 'Editor cleared',
   'editor.invalidJson': 'Invalid JSON',
   'editor.invalidSql': 'Invalid SQL',

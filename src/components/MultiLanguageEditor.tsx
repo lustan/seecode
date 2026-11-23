@@ -134,15 +134,25 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   useEffect(() => {
     if (language) {
       setCurrentLanguage(language);
-    } else if (autoDetectLanguage && value) {
-      setCurrentLanguage(detectLanguage(value));
+    } else if (autoDetectLanguage) {
+      setCurrentLanguage(value ? detectLanguage(value) : 'plaintext');
     }
   }, [value, autoDetectLanguage, language]);
+
+  useEffect(() => {
+    if (currentLanguage !== 'json') {
+      setErrorCount(0);
+    }
+  }, [currentLanguage]);
 
   // IDEA Style JSON Linter
   const ideaJsonLinter = useMemo(() => linter(view => {
     let diagnostics: Diagnostic[] = [];
     if (currentLanguage !== 'json') return diagnostics;
+    if (!view.state.doc.toString().trim()) {
+      setErrorCount(0);
+      return diagnostics;
+    }
 
     syntaxTree(view.state).iterate({
       enter: (node) => {
@@ -239,6 +249,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   const getLanguageExt = (lang: SupportedLanguage) => {
     switch(lang) {
       case 'json': return [json(), ideaJsonLinter, lintGutter(), ...jsonFoldingExt];
+      case 'javascript': return [javascript({ jsx: true, typescript: true })];
       case 'python': return [python()];
       case 'java': return [java()];
       case 'sql': return [sql()];
@@ -248,8 +259,17 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(value);
-    showAlert?.({ type: 'success', message: t('editor.copied'), presentation: 'toast' });
+    if (!navigator.clipboard) {
+      showAlert?.({ type: 'error', message: t('editor.copyFailed'), presentation: 'toast' });
+      return;
+    }
+    navigator.clipboard.writeText(value)
+      .then(() => {
+        showAlert?.({ type: 'success', message: t('editor.copied'), presentation: 'toast' });
+      })
+      .catch(() => {
+        showAlert?.({ type: 'error', message: t('editor.copyFailed'), presentation: 'toast' });
+      });
   };
 
   const handleClear = () => {
@@ -345,12 +365,17 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       const flags = searchCaseSensitive ? 'g' : 'gi';
       const pattern = searchRegex ? searchText : searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const regex = new RegExp(pattern, flags);
-      onChange(text.replace(regex, replaceText));
+      const replaced = searchRegex
+        ? text.replace(regex, replaceText)
+        : text.replace(regex, () => replaceText);
+      if (replaced !== text) {
+        view.dispatch({ changes: { from: 0, to: text.length, insert: replaced } });
+      }
       performSearch(searchText, searchCaseSensitive, searchRegex, 'next');
     } catch {
       showAlert?.({ type: 'error', message: t('editor.invalidSearch') });
     }
-  }, [getEditorView, searchText, searchCaseSensitive, searchRegex, onChange, replaceText, performSearch, showAlert, t]);
+  }, [getEditorView, searchText, searchCaseSensitive, searchRegex, replaceText, performSearch, showAlert, t]);
 
   const searchKeyBindings = useMemo(
     () =>
@@ -816,7 +841,17 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       )}
 
       {showSearch && (
-        <div className="plex-search-panel" onClick={e => e.stopPropagation()}>
+        <div
+          className="plex-search-panel"
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              e.stopPropagation();
+              closeSearch();
+            }
+          }}
+        >
           <div className="plex-search-row">
             <div className="plex-search-input-wrap">
               <span className="plex-find-icon"><Icons.Search /></span>

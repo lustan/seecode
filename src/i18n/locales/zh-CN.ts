@@ -34,6 +34,7 @@ const zhCN: Record<TranslationKey, string> = {
   'sidebar.deleteFolder': '删除文件夹（文件将移到根目录）',
   'editor.jsonSyntaxError': 'JSON 语法错误：存在意外字符或结构不完整',
   'editor.copied': '已复制到剪贴板',
+  'editor.copyFailed': '复制到剪贴板失败',
   'editor.cleared': '编辑器已清空',
   'editor.invalidJson': 'JSON 格式无效',
   'editor.invalidSql': 'SQL 格式无效',

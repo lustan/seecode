@@ -1,8 +1,5 @@
 {
-  "name": "Gemini Chrome Extension Starter",
-  "description": "A high-performance Chrome extension boilerplate featuring React, Tailwind CSS, and Google Gemini API integration.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone"
-  ]
+  "name": "DiffPad — Code Editor & File Diff",
+  "description": "A code editor with multi-language support, JSON formatting, note folders, and IDEA-style two-pane file comparison.",
+  "requestFramePermissions": []
 }

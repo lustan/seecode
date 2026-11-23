@@ -9,8 +9,12 @@ import { I18nProvider } from './i18n';
 declare const chrome: any;
 
 function openInNewTab() {
-  chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
-  window.close(); // 关闭 popup
+  if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
+    chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
+    window.close(); // 关闭 popup
+  } else {
+    window.location.href = 'editor.html';
+  }
 }
 
 function PopupRoot() {
