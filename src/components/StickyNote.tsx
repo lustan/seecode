@@ -9,15 +9,29 @@ declare const chrome: any;
 const STORAGE_KEY = 'loojsoneditor_notes';
 
 function loadNotes(): Promise<Note[]> {
-  return new Promise(resolve => {
-    chrome.storage.local.get([STORAGE_KEY], result => {
-      resolve(result[STORAGE_KEY] || []);
+  if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+    return new Promise(resolve => {
+      chrome.storage.local.get([STORAGE_KEY], (result: Record<string, any>) => {
+        resolve(result[STORAGE_KEY] || []);
+      });
     });
-  });
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return Promise.resolve(raw ? JSON.parse(raw) : []);
+  } catch {
+    return Promise.resolve([]);
+  }
 }
 
 function saveNotes(notes: Note[]) {
-  chrome.storage.local.set({ [STORAGE_KEY]: notes });
+  if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+    chrome.storage.local.set({ [STORAGE_KEY]: notes });
+    return;
+  }
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+  } catch {}
 }
 
 export default function StickyNote() {

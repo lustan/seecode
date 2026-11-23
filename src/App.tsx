@@ -41,48 +41,81 @@ const Icons = {
   Message: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
 };
 
+function getChromeStorage() {
+  return typeof chrome !== 'undefined' && chrome?.storage?.local ? chrome.storage.local : null;
+}
+
+function storageGet<T>(key: string, fallback: T): Promise<T> {
+  const store = getChromeStorage();
+  if (store) {
+    return new Promise(resolve => {
+      store.get([key], (result: Record<string, any>) => resolve(result[key] ?? fallback));
+    });
+  }
+  try {
+    const raw = window.localStorage.getItem(key);
+    return Promise.resolve(raw !== null ? (JSON.parse(raw) as T) : fallback);
+  } catch {
+    return Promise.resolve(fallback);
+  }
+}
+
+function storageSet(key: string, value: unknown) {
+  const store = getChromeStorage();
+  if (store) {
+    store.set({ [key]: value });
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+function storageRemove(key: string) {
+  const store = getChromeStorage();
+  if (store) {
+    store.remove(key);
+    return;
+  }
+  try {
+    window.localStorage.removeItem(key);
+  } catch {}
+}
+
 function loadNotes(): Promise<Note[]> {
-  return new Promise(resolve => {
-    chrome.storage.local.get([STORAGE_KEY], result => resolve(result[STORAGE_KEY] || []));
-  });
+  return storageGet<Note[]>(STORAGE_KEY, []);
 }
 
 function saveNotes(notes: Note[]) {
-  chrome.storage.local.set({ [STORAGE_KEY]: notes });
+  storageSet(STORAGE_KEY, notes);
 }
 
 function loadFolders(): Promise<Folder[]> {
-  return new Promise(resolve => {
-    chrome.storage.local.get([FOLDERS_KEY], result => resolve(result[FOLDERS_KEY] || []));
-  });
+  return storageGet<Folder[]>(FOLDERS_KEY, []);
 }
 
 function saveFolders(folders: Folder[]) {
-  chrome.storage.local.set({ [FOLDERS_KEY]: folders });
+  storageSet(FOLDERS_KEY, folders);
 }
 
 function loadSettings(): Promise<{ theme: 'dark' | 'light'; fontSize: number }> {
-  return new Promise(resolve => {
-    chrome.storage.local.get([SETTINGS_KEY], result => resolve(result[SETTINGS_KEY] || { theme: 'dark', fontSize: 13 }));
-  });
+  return storageGet<{ theme: 'dark' | 'light'; fontSize: number }>(SETTINGS_KEY, { theme: 'dark', fontSize: 13 });
 }
 
 function saveSettings(settings: { theme: 'dark' | 'light'; fontSize: number }) {
-  chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  storageSet(SETTINGS_KEY, settings);
 }
 
 function loadActiveNoteId(): Promise<string | null> {
-  return new Promise(resolve => {
-    chrome.storage.local.get([ACTIVE_NOTE_KEY], result => resolve(result[ACTIVE_NOTE_KEY] || null));
-  });
+  return storageGet<string | null>(ACTIVE_NOTE_KEY, null);
 }
 
 function saveActiveNoteId(activeId: string | null) {
   if (!activeId) {
-    chrome.storage.local.remove(ACTIVE_NOTE_KEY);
+    storageRemove(ACTIVE_NOTE_KEY);
     return;
   }
-  chrome.storage.local.set({ [ACTIVE_NOTE_KEY]: activeId });
+  storageSet(ACTIVE_NOTE_KEY, activeId);
 }
 
 function getActiveIdFromQuery(): string | null {
@@ -107,6 +140,7 @@ export default function App({ isPopup = false }) {
   const [showSettings, setShowSettings] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const hydratedRef = useRef(false);
 
   const closeAlert = () => setAlertState(prev => prev ? { ...prev, visible: false } : null);
   const closeToast = () => setToastState(prev => prev ? { ...prev, visible: false } : null);
@@ -160,6 +194,7 @@ export default function App({ isPopup = false }) {
     });
 
     Promise.all([loadNotes(), loadActiveNoteId(), loadFolders()]).then(([n, storedActiveId, f]) => {
+      hydratedRef.current = true;
       setNotes(n);
       setFolders(f);
       const queryActiveId = getActiveIdFromQuery();
@@ -191,9 +226,9 @@ export default function App({ isPopup = false }) {
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  useEffect(() => { saveNotes(notes); }, [notes]);
-  useEffect(() => { saveFolders(folders); }, [folders]);
-  useEffect(() => { saveActiveNoteId(activeId); }, [activeId]);
+  useEffect(() => { if (hydratedRef.current) saveNotes(notes); }, [notes]);
+  useEffect(() => { if (hydratedRef.current) saveFolders(folders); }, [folders]);
+  useEffect(() => { if (hydratedRef.current) saveActiveNoteId(activeId); }, [activeId]);
 
   useEffect(() => {
     if (notes.length === 0) {
@@ -378,14 +413,16 @@ export default function App({ isPopup = false }) {
         onDeleteFolder={handleDeleteFolder}
         onToggleFolder={handleToggleFolder}
         onMoveNote={handleMoveNote}
-        onDelete={(id) => setNotes(notes.filter(n => n.id !== id))}
+        onDelete={(id) => setNotes(prev => prev.filter(n => n.id !== id))}
         onRename={handleRename}
-        onSelect={setActiveId}
+        onSelect={(id) => { setEditingId(null); setActiveId(id); }}
         onReorder={(f, t) => {
-          const arr = [...notes];
-          const [moved] = arr.splice(f, 1);
-          arr.splice(t, 0, moved);
-          setNotes(arr);
+          setNotes(prev => {
+            const arr = [...prev];
+            const [moved] = arr.splice(f, 1);
+            arr.splice(t, 0, moved);
+            return arr;
+          });
         }}
         isPopup={isPopup}
         style={{ width: getSidebarWidth(isPopup), borderRight: `1px solid ${colors.border}`, flexShrink: 0 }}
@@ -404,11 +441,11 @@ export default function App({ isPopup = false }) {
           position: 'relative'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
-            {editingId === activeId ? (
+            {activeNote && editingId === activeId ? (
               <input
                 ref={titleInputRef}
                 className="title-input"
-                defaultValue={activeNote?.title}
+                defaultValue={activeNote.title}
                 autoFocus
                 onFocus={(e) => e.target.select()}
                 onBlur={(e) => handleRename(activeId!, e.target.value)}
@@ -433,8 +470,12 @@ export default function App({ isPopup = false }) {
             {isPopup && activeNote && (
                <>
                  <button className="open-btn" title="Open Full Editor" onClick={() => {
-                   chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?activeId=${activeNote.id}` });
-                   window.close();
+                   if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
+                     chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?activeId=${activeNote.id}` });
+                     window.close();
+                   } else {
+                     window.location.href = `editor.html?activeId=${activeNote.id}`;
+                   }
                  }}><Icons.Maximize /></button>
                  <div style={{ width: 1, height: 14, background: colors.border, margin: '0 2px' }} />
                </>
@@ -487,7 +528,7 @@ export default function App({ isPopup = false }) {
             <Editor
               key={activeId}
               value={activeNote.content}
-              onChange={(c) => setNotes(notes.map(n => n.id === activeId ? { ...n, content: c } : n))}
+              onChange={(c) => setNotes(prev => prev.map(n => n.id === activeId ? { ...n, content: c } : n))}
               isPopup={isPopup}
               theme={theme}
               fontSize={fontSize}

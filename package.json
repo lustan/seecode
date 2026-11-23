@@ -3,7 +3,7 @@
   "version": "4.0.5",
   "private": true,
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build",
     "test": "node tests/brandStyles.test.mjs && node tests/feedbackRouting.test.mjs && node tests/toastTheme.test.mjs && node tests/layout.test.mjs && node tests/inlineDiff.test.mjs && node tests/applyDiffHunk.test.mjs"
   },

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
-import { applyDiffHunk, textToLines } from '../src/utils/applyDiffHunk.mjs';
+import { applyDiffHunk, spliceSegmentLines, textToLines } from '../src/utils/applyDiffHunk.mjs';
 
 assert.deepEqual(textToLines(''), []);
 assert.deepEqual(textToLines('a\n\n'), ['a', '', '']);
+
+assert.equal(spliceSegmentLines('', 0, -1, 'hello'), 'hello');
+assert.equal(spliceSegmentLines('', 0, -1, 'line 1\nline 2'), 'line 1\nline 2');
+assert.equal(spliceSegmentLines('a\nb\nc', 1, 1, 'B'), 'a\nB\nc');
+assert.equal(spliceSegmentLines('a\nb\nc', 0, 2, ''), '');
 
 const modify = { leftFirst: 1, leftLast: 2, rightFirst: 1, rightLast: 1, kind: 'modify' };
 assert.deepEqual(applyDiffHunk('same\nleft 1\nleft 2\nend', 'same\nright\nend', modify, 'left'), {

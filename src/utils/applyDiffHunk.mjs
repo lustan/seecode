@@ -4,6 +4,15 @@ export function textToLines(text) {
   return text === '' ? [] : text.split('\n');
 }
 
+/** Splice an edited segment's text back into the full document without
+ * inventing a trailing newline when the document started empty. */
+export function spliceSegmentLines(text, startLine, endLine, segmentValue) {
+  const docLines = textToLines(text);
+  const before = docLines.slice(0, startLine);
+  const after = endLine < startLine ? docLines.slice(startLine) : docLines.slice(endLine + 1);
+  return [...before, ...segmentValue.split('\n'), ...after].join('\n');
+}
+
 /**
  * Copy one complete diff hunk from `sourceSide` to the opposite side.
  *
