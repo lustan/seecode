@@ -3,11 +3,11 @@ import NoteList from './components/NoteList';
 import Editor from './components/Editor';
 import CustomAlert from './components/CustomAlert';
 import Toast from './components/Toast';
-import { SupportedLanguage, getSupportedLanguages } from './utils/languageDetector';
-import { LanguageIcon } from './components/LanguageIcons';
+import { SupportedLanguage, detectLanguage } from './utils/languageDetector';
 import { CONFIG } from './config';
 import { resolveFeedbackPresentation } from './utils/feedbackRouting.mjs';
 import { getSidebarWidth } from './utils/layout.mjs';
+import { exportBackupPayload, parseBackupPayload, getSampleWorkspace } from './utils/noteBackup.mjs';
 import { useI18n, LocalePreference } from './i18n';
 
 declare const chrome: any;
@@ -30,12 +30,17 @@ const STORAGE_KEY = 'plexcodeeditor_notes';
 const FOLDERS_KEY = 'plexcodeeditor_folders';
 const SETTINGS_KEY = 'plexcodeeditor_settings';
 const ACTIVE_NOTE_KEY = 'plexcodeeditor_active_note_id';
+const PENDING_IMPORT_KEY = 'seecode_pending_import';
 
 const Icons = {
   Edit: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4L18.5 2.5z"></path></svg>,
   Sun: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line></svg>,
   Moon: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>,
   Maximize: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>,
+  Compare: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="6" y1="3" x2="6" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>,
+  Download: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>,
+  Upload: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>,
+  FileCode: () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><polyline points="10 13 8 15 10 17"></polyline><polyline points="14 13 16 15 14 17"></polyline></svg>,
   ChevronDown: () => <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>,
   Settings: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
   Github: () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7a3.37 3.37 0 0 0-.94 2.58V22"></path></svg>,
@@ -140,8 +145,10 @@ export default function App({ isPopup = false }) {
   const [alertState, setAlertState] = useState<any>(null);
   const [toastState, setToastState] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [pendingCompare, setPendingCompare] = useState<{ rightNoteId?: string; rightText?: string } | null>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const hydratedRef = useRef(false);
 
   const closeAlert = () => setAlertState(prev => prev ? { ...prev, visible: false } : null);
@@ -154,7 +161,9 @@ export default function App({ isPopup = false }) {
         message: options.message,
         type: options.type || 'info',
         theme,
-        duration: options.duration || 1500
+        duration: options.duration || (options.actionLabel ? 4500 : 1500),
+        actionLabel: options.actionLabel,
+        onAction: options.onAction
       });
       return;
     }
@@ -195,27 +204,58 @@ export default function App({ isPopup = false }) {
       setFontSize(s.fontSize);
     });
 
-    Promise.all([loadNotes(), loadActiveNoteId(), loadFolders()]).then(([n, storedActiveId, f]) => {
+    Promise.all([
+      loadNotes(),
+      loadActiveNoteId(),
+      loadFolders(),
+      storageGet<{ text?: string; compare?: boolean; createdAt?: number } | null>(PENDING_IMPORT_KEY, null)
+    ]).then(([n, storedActiveId, f, pendingImport]) => {
       hydratedRef.current = true;
-      setNotes(n);
+      let nextNotes = n;
+      let nextActiveId: string | null = null;
+
+      if (!isPopup && pendingImport?.text) {
+        storageRemove(PENDING_IMPORT_KEY);
+        const importedText = pendingImport.text;
+        const queryActiveId = getActiveIdFromQuery();
+        const baseActiveId =
+          [queryActiveId, storedActiveId].find(id => id && n.some(note => note.id === id)) || (n[0]?.id ?? null);
+
+        if (pendingImport.compare && baseActiveId) {
+          nextActiveId = baseActiveId;
+          setPendingCompare({ rightText: importedText });
+        } else {
+          const newId = `clip-${Date.now()}`;
+          const newNote: Note = {
+            id: newId,
+            title: `Clip ${n.length + 1}`,
+            content: importedText,
+            language: detectLanguage(importedText)
+          };
+          nextNotes = [...n, newNote];
+          nextActiveId = newId;
+          if (pendingImport.compare) {
+            setPendingCompare({});
+          }
+        }
+      } else {
+        const queryActiveId = getActiveIdFromQuery();
+        const candidateIds = [queryActiveId, storedActiveId];
+        const restoredActiveId = candidateIds.find(id => id && n.some(note => note.id === id)) || null;
+        nextActiveId = restoredActiveId || (n[0]?.id ?? null);
+      }
+
+      setNotes(nextNotes);
       setFolders(f);
-      const queryActiveId = getActiveIdFromQuery();
-      const candidateIds = [queryActiveId, storedActiveId];
-      const restoredActiveId = candidateIds.find(id => id && n.some(note => note.id === id)) || null;
-      setActiveId(restoredActiveId || (n[0]?.id ?? null));
+      setActiveId(nextActiveId);
+
       if (!isPopup && getCompareFromQuery()) {
-        // strip the flag from the URL so a reload doesn't reopen the diff
         try {
           const url = new URL(window.location.href);
           url.searchParams.delete('compare');
           window.history.replaceState({}, '', url.toString());
         } catch {}
-        // Fire a one-shot event after the editor mounts. Using an event (not state)
-        // prevents accidental re-trigger when the editor remounts later — e.g. after
-        // creating a new note, which switches activeId and remounts <Editor>.
-        setTimeout(() => {
-          window.dispatchEvent(new CustomEvent('seecode:open-compare'));
-        }, 0);
+        setPendingCompare({});
       }
     });
 
@@ -226,7 +266,20 @@ export default function App({ isPopup = false }) {
     };
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, []);
+  }, [isPopup]);
+
+  useEffect(() => {
+    if (isPopup) return;
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'd') {
+        if (notes.length === 0) return;
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('seecode:open-compare'));
+      }
+    };
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts);
+  }, [isPopup, notes.length]);
 
   useEffect(() => { if (hydratedRef.current) saveNotes(notes); }, [notes]);
   useEffect(() => { if (hydratedRef.current) saveFolders(folders); }, [folders]);
@@ -242,6 +295,13 @@ export default function App({ isPopup = false }) {
   }, [notes, activeId]);
 
   const activeNote = notes.find(n => n.id === activeId);
+
+  useEffect(() => {
+    if (isPopup || !pendingCompare || !activeNote) return;
+    const detail = pendingCompare;
+    setPendingCompare(null);
+    window.dispatchEvent(new CustomEvent('seecode:open-compare', { detail }));
+  }, [isPopup, pendingCompare, activeNote]);
 
   const handleAdd = (options: { folderId?: string; language?: SupportedLanguage; title?: string } = {}) => {
     const { folderId, language, title } = options;
@@ -314,6 +374,162 @@ export default function App({ isPopup = false }) {
     setEditingId(null);
   };
 
+  const handleDeleteNote = (id: string) => {
+    const idx = notes.findIndex(n => n.id === id);
+    if (idx === -1) return;
+    const deleted = notes[idx];
+    setNotes(prev => prev.filter(n => n.id !== id));
+    showAlert({
+      type: 'info',
+      presentation: 'toast',
+      duration: 4500,
+      message: t('note.deletedToast', { title: deleted.title }),
+      actionLabel: t('diff.undo'),
+      onAction: () => {
+        setNotes(prev => {
+          if (prev.some(n => n.id === deleted.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(idx, next.length), 0, deleted);
+          return next;
+        });
+        setActiveId(deleted.id);
+      }
+    });
+  };
+
+  const handleCreateNoteFromDiff = (title: string, content: string, language?: SupportedLanguage) => {
+    const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newNote: Note = {
+      id,
+      title,
+      content,
+      language: language || detectLanguage(content)
+    };
+    setNotes(prev => [...prev, newNote]);
+    return id;
+  };
+
+  const handleLoadSampleDiff = () => {
+    const [left, right] = getSampleWorkspace();
+    const leftNote: Note = { ...left };
+    const rightNote: Note = { ...right };
+    setNotes(prev => [...prev, leftNote, rightNote]);
+    setActiveId(leftNote.id);
+    if (isPopup) {
+      try {
+        if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
+          chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?compare=1&activeId=${leftNote.id}` });
+          window.close();
+          return;
+        }
+      } catch {}
+    }
+    setPendingCompare({ rightNoteId: rightNote.id });
+  };
+
+  const triggerDownload = (filename: string, content: string, mime = 'text/plain;charset=utf-8') => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportBackup = () => {
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const payload = exportBackupPayload(notes, folders, CONFIG.VERSION);
+    triggerDownload(`diffpad-backup-${dateStamp}.json`, payload, 'application/json;charset=utf-8');
+    setShowSettings(false);
+    showAlert({ type: 'success', presentation: 'toast', message: t('settings.backupExported') });
+  };
+
+  const handleDownloadActiveNote = () => {
+    if (!activeNote) return;
+    const extMap: Record<SupportedLanguage, string> = {
+      plaintext: 'txt',
+      json: 'json',
+      javascript: 'js',
+      python: 'py',
+      java: 'java',
+      sql: 'sql',
+      markdown: 'md'
+    };
+    const lang = activeNote.language || detectLanguage(activeNote.content);
+    const ext = extMap[lang] || 'txt';
+    const rawName = (activeNote.title || 'snippet').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = rawName.includes('.') ? rawName : `${rawName}.${ext}`;
+    triggerDownload(filename, activeNote.content);
+    setShowSettings(false);
+  };
+
+  const handleImportBackupFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const raw = typeof reader.result === 'string' ? reader.result : '';
+        const parsed = parseBackupPayload(raw);
+        if (parsed.notes.length === 0 && parsed.folders.length === 0) {
+          showAlert({ type: 'error', presentation: 'toast', message: t('settings.backupInvalid') });
+          return;
+        }
+        const suffix = Date.now().toString(36);
+        const existingFolderIds = new Set(folders.map(f => f.id));
+        const folderIdMap = new Map<string, string>();
+        const nextFolders = parsed.folders.map((f: Folder, i: number) => {
+          const id = existingFolderIds.has(f.id) ? `${f.id}-${suffix}-${i}` : f.id;
+          folderIdMap.set(f.id, id);
+          return { ...f, id };
+        });
+
+        const existingNoteIds = new Set(notes.map(n => n.id));
+        const nextNotes = parsed.notes.map((n: Note, i: number) => {
+          const id = existingNoteIds.has(n.id) ? `${n.id}-${suffix}-${i}` : n.id;
+          const mappedFolderId = n.folderId ? (folderIdMap.get(n.folderId) || n.folderId) : undefined;
+          return { ...n, id, folderId: mappedFolderId };
+        });
+
+        setFolders(prev => [...prev, ...nextFolders]);
+        setNotes(prev => [...prev, ...nextNotes]);
+        if (!activeId && nextNotes.length > 0) {
+          setActiveId(nextNotes[0].id);
+        }
+        setShowSettings(false);
+        showAlert({
+          type: 'success',
+          presentation: 'toast',
+          message: t('settings.backupImported', {
+            count: nextNotes.length,
+            files: t(nextNotes.length === 1 ? 'files.one' : 'files.many')
+          })
+        });
+      } catch {
+        showAlert({ type: 'error', presentation: 'toast', message: t('settings.backupInvalid') });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const openCompareView = () => {
+    if (!activeNote) return;
+    if (isPopup) {
+      if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
+        chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?compare=1&activeId=${activeNote.id}` });
+        window.close();
+      } else {
+        window.location.href = `editor.html?compare=1&activeId=${activeNote.id}`;
+      }
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('seecode:open-compare'));
+  };
+
   const setNoteLanguage = (id: string, lang: SupportedLanguage | 'auto') => {
     setNotes(notes.map(n => n.id === id ? { ...n, language: lang === 'auto' ? undefined : lang } : n));
   };
@@ -376,15 +592,51 @@ export default function App({ isPopup = false }) {
 
         .title-input { background: ${colors.inputBg}; border: 1px solid #3b82f6; color: ${colors.text}; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; outline: none; width: 140px; }
         
-        .header-context { display: flex; align-items: center; padding: 0; transition: all 0.2s; }
-        .note-title-trigger { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; cursor: pointer; transition: all 0.2s; }
+        .header-context { display: flex; align-items: center; padding: 0; }
+        .note-title-trigger {
+          display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+          cursor: pointer; transition: background 0.15s ease; border: none; background: transparent; color: ${colors.text};
+        }
         .note-title-trigger:hover { background: ${colors.badgeHover}; }
 
+        .header-compare-btn {
+          display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px;
+          border-radius: 7px; border: 1px solid ${theme === 'dark' ? 'rgba(96, 165, 250, 0.28)' : 'rgba(59, 130, 246, 0.28)'};
+          background: ${theme === 'dark' ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)'};
+          color: ${theme === 'dark' ? '#93c5fd' : '#2563eb'};
+          font-size: 11px; font-weight: 700; cursor: pointer; transition: all 0.15s ease;
+        }
+        .header-compare-btn:hover {
+          background: #3b82f6; color: #ffffff; border-color: #3b82f6;
+          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+        }
+
+        .empty-state-btn {
+          display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+          height: 34px; padding: 0 14px; border-radius: 8px;
+          font-size: 12px; font-weight: 700; cursor: pointer; transition: all 0.15s ease;
+          border: 1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.1)' : '#e2e8f0'};
+          background: ${theme === 'dark' ? 'rgba(255,255,255,0.04)' : '#f8fafc'};
+          color: ${colors.text};
+        }
+        .empty-state-btn:hover {
+          border-color: #3b82f6;
+          background: ${theme === 'dark' ? 'rgba(59, 130, 246, 0.14)' : 'rgba(59, 130, 246, 0.08)'};
+          color: ${theme === 'dark' ? '#93c5fd' : '#2563eb'};
+        }
+        .empty-state-btn.primary {
+          background: #3b82f6; border-color: #3b82f6; color: #ffffff;
+          box-shadow: 0 6px 16px rgba(59, 130, 246, 0.28);
+        }
+        .empty-state-btn.primary:hover {
+          background: #2563eb; border-color: #2563eb; color: #ffffff;
+        }
+
         .settings-menu {
-          position: absolute; top: 32px; right: 8px; width: 185px;
+          position: absolute; top: 34px; right: 8px; width: 224px;
           background: ${colors.dropdownBg}; backdrop-filter: blur(20px);
           border: 1px solid ${colors.border}; border-radius: 10px;
-          box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1000;
+          box-shadow: 0 10px 25px rgba(0,0,0,0.18); z-index: 1000;
           padding: 5px; animation: slideDown 0.15s ease-out;
         }
         @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
@@ -393,7 +645,7 @@ export default function App({ isPopup = false }) {
           display: flex; align-items: center; gap: 8px; padding: 6px 10px;
           border-radius: 6px; cursor: pointer; color: ${colors.textSec};
           font-size: 11px; font-weight: 600; transition: all 0.15s;
-          text-decoration: none;
+          text-decoration: none; border: none; background: transparent; width: 100%; text-align: left;
         }
         .menu-item:hover { background: ${colors.dropdownItemHover}; color: #3b82f6; }
         
@@ -415,7 +667,7 @@ export default function App({ isPopup = false }) {
         onDeleteFolder={handleDeleteFolder}
         onToggleFolder={handleToggleFolder}
         onMoveNote={handleMoveNote}
-        onDelete={(id) => setNotes(prev => prev.filter(n => n.id !== id))}
+        onDelete={handleDeleteNote}
         onRename={handleRename}
         onSelect={(id) => { setEditingId(null); setActiveId(id); }}
         onReorder={(f, t) => {
@@ -458,35 +710,61 @@ export default function App({ isPopup = false }) {
               />
             ) : (
               <div className="header-context">
-                <div className="note-title-trigger" onClick={() => activeId && setEditingId(activeId)}>
-                   <span style={{ fontWeight: 700, fontSize: '12px', letterSpacing: '-0.01em' }}>
-                     {activeNote?.title || t('note.noActive')}
-                   </span>
-                   <div style={{ opacity: 0.3 }}><Icons.Edit /></div>
-                </div>
+                <button
+                  type="button"
+                  className="note-title-trigger"
+                  onClick={() => activeId && setEditingId(activeId)}
+                  disabled={!activeId}
+                  aria-label={activeNote?.title || t('note.noActive')}
+                >
+                  <span style={{ fontWeight: 700, fontSize: '12px', letterSpacing: '-0.01em' }}>
+                    {activeNote?.title || t('note.noActive')}
+                  </span>
+                  {activeNote && <div style={{ opacity: 0.35, display: 'flex' }}><Icons.Edit /></div>}
+                </button>
               </div>
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }} ref={settingsRef}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }} ref={settingsRef}>
+            {activeNote && (
+              <button
+                type="button"
+                className="header-compare-btn"
+                onClick={openCompareView}
+                title={t('header.compareTitle')}
+              >
+                <Icons.Compare />
+                <span>{t('header.compare')}</span>
+              </button>
+            )}
+
             {isPopup && activeNote && (
                <>
-                 <button className="open-btn" title={t('settings.openFullEditor')} onClick={() => {
-                   if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
-                     chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?activeId=${activeNote.id}` });
-                     window.close();
-                   } else {
-                     window.location.href = `editor.html?activeId=${activeNote.id}`;
-                   }
-                 }}><Icons.Maximize /></button>
+                 <button
+                   type="button"
+                   className="open-btn"
+                   title={t('settings.openFullEditor')}
+                   aria-label={t('settings.openFullEditor')}
+                   onClick={() => {
+                     if (typeof chrome !== 'undefined' && chrome?.tabs?.create && chrome?.runtime?.getURL) {
+                       chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') + `?activeId=${activeNote.id}` });
+                       window.close();
+                     } else {
+                       window.location.href = `editor.html?activeId=${activeNote.id}`;
+                     }
+                   }}
+                 ><Icons.Maximize /></button>
                  <div style={{ width: 1, height: 14, background: colors.border, margin: '0 2px' }} />
                </>
             )}
             
-            <button 
+            <button
+              type="button"
               className={`util-btn ${showSettings ? 'active' : ''}`} 
               onClick={() => setShowSettings(!showSettings)}
               title={t('settings.title')}
+              aria-label={t('settings.title')}
             >
               <Icons.Settings />
             </button>
@@ -495,15 +773,21 @@ export default function App({ isPopup = false }) {
               <div className="settings-menu">
                 <div className="control-row">
                   <div className="control-group">
-                    <button className="util-btn" onClick={toggleTheme} style={{padding: '3px'}}>
+                    <button
+                      type="button"
+                      className="util-btn"
+                      onClick={toggleTheme}
+                      style={{ padding: '3px' }}
+                      aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                    >
                       {theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />}
                     </button>
                   </div>
                   <div style={{ width: 1, height: 12, background: colors.border }} />
                   <div className="control-group">
-                    <button className="util-btn" onClick={() => updateFontSize(-1)} style={{fontSize: 10, padding: '2px 6px'}}>-</button>
+                    <button type="button" className="util-btn" onClick={() => updateFontSize(-1)} style={{fontSize: 10, padding: '2px 6px'}} aria-label="Decrease font size">-</button>
                     <span style={{fontSize: 10, fontWeight: 800, minWidth: 20, textAlign: 'center'}}>{fontSize}</span>
-                    <button className="util-btn" onClick={() => updateFontSize(1)} style={{fontSize: 10, padding: '2px 6px'}}>+</button>
+                    <button type="button" className="util-btn" onClick={() => updateFontSize(1)} style={{fontSize: 10, padding: '2px 6px'}} aria-label="Increase font size">+</button>
                   </div>
                 </div>
 
@@ -514,7 +798,7 @@ export default function App({ isPopup = false }) {
                     value={preference}
                     onChange={e => setPreference(e.target.value as LocalePreference)}
                     style={{
-                      maxWidth: 94, border: `1px solid ${colors.border}`, borderRadius: 5,
+                      maxWidth: 112, border: `1px solid ${colors.border}`, borderRadius: 5,
                       background: colors.badge, color: colors.text, fontSize: 10, padding: '3px 4px'
                     }}
                   >
@@ -522,16 +806,30 @@ export default function App({ isPopup = false }) {
                   </select>
                 </label>
 
-                <a href={CONFIG.GITHUB_URL} target="_blank" className="menu-item">
+                {activeNote && (
+                  <button type="button" className="menu-item" onClick={handleDownloadActiveNote}>
+                    <Icons.Download /> {t('settings.downloadFile')}
+                  </button>
+                )}
+                <button type="button" className="menu-item" onClick={handleExportBackup}>
+                  <Icons.Download /> {t('settings.exportBackup')}
+                </button>
+                <button type="button" className="menu-item" onClick={() => backupInputRef.current?.click()}>
+                  <Icons.Upload /> {t('settings.importBackup')}
+                </button>
+
+                <div style={{ height: 1, background: colors.border, margin: '4px 6px' }} />
+
+                <a href={CONFIG.GITHUB_URL} target="_blank" rel="noreferrer" className="menu-item">
                   <Icons.Github /> {t('settings.github')}
                 </a>
-                <a href={CONFIG.FEEDBACK_URL} target="_blank" className="menu-item">
+                <a href={CONFIG.FEEDBACK_URL} target="_blank" rel="noreferrer" className="menu-item">
                   <Icons.Message /> {t('settings.feedback')}
                 </a>
 
                 <div style={{ 
                   marginTop: 4, paddingTop: 4, borderTop: `1px solid ${colors.border}`, 
-                  textAlign: 'center', fontSize: '8px', color: colors.textSec, fontWeight: 800, opacity: 0.4 
+                  textAlign: 'center', fontSize: '8px', color: colors.textSec, fontWeight: 800, opacity: 0.45 
                 }}>
                   {t('settings.version', { version: CONFIG.VERSION })}
                 </div>
@@ -553,19 +851,74 @@ export default function App({ isPopup = false }) {
               onLanguageChange={(lang) => setNoteLanguage(activeId!, lang)}
               allNotes={notes}
               activeNoteId={activeId}
+              activeNoteTitle={activeNote.title}
               onSaveNote={(noteId, content) =>
                 setNotes(prev => prev.map(n => n.id === noteId ? { ...n, content } : n))}
+              onCreateNote={handleCreateNoteFromDiff}
               showAlert={showAlert}
             />
           ) : (
-            <div style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', opacity: 0.1 }}>
-               <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-               <p style={{ marginTop: 12, fontWeight: 700, fontSize: 13 }}>{t('note.select')}</p>
+            <div style={{
+              flex: 1, height: '100%', display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center'
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: theme === 'dark' ? 'rgba(59, 130, 246, 0.14)' : 'rgba(59, 130, 246, 0.08)',
+                border: `1px solid ${theme === 'dark' ? 'rgba(96, 165, 250, 0.25)' : 'rgba(59, 130, 246, 0.2)'}`,
+                color: '#3b82f6', marginBottom: 16
+              }}>
+                <img src="/icon.svg" alt="DiffPad" style={{ width: 28, height: 28 }} />
+              </div>
+              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: colors.text, letterSpacing: '-0.02em' }}>
+                {t('note.emptyTitle')}
+              </h2>
+              <p style={{
+                margin: '8px 0 22px', maxWidth: 380, fontSize: 12, lineHeight: 1.6,
+                color: colors.textSec, fontWeight: 500
+              }}>
+                {t('note.emptySubtitle')}
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, justifyContent: 'center' }}>
+                <button
+                  type="button"
+                  className="empty-state-btn primary"
+                  onClick={() => handleAdd({ language: 'json', title: `JSON ${notes.length + 1}` })}
+                >
+                  <Icons.FileCode />
+                  {t('note.createJson')}
+                </button>
+                <button
+                  type="button"
+                  className="empty-state-btn"
+                  onClick={handleLoadSampleDiff}
+                >
+                  <Icons.Compare />
+                  {t('note.loadSampleDiff')}
+                </button>
+                <button
+                  type="button"
+                  className="empty-state-btn"
+                  onClick={() => backupInputRef.current?.click()}
+                >
+                  <Icons.Upload />
+                  {t('note.importBackup')}
+                </button>
+              </div>
             </div>
           )}
           {toastState && <Toast {...toastState} onDone={closeToast} />}
         </div>
       </div>
+
+      <input
+        ref={backupInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={handleImportBackupFile}
+      />
 
       {alertState && <CustomAlert {...alertState} />}
     </div>

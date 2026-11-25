@@ -14,7 +14,9 @@ interface Props {
   onLanguageChange?: (lang: SupportedLanguage | 'auto') => void;
   allNotes?: Note[];
   activeNoteId?: string | null;
+  activeNoteTitle?: string;
   onSaveNote?: (noteId: string, content: string) => void;
+  onCreateNote?: (title: string, content: string, language?: SupportedLanguage) => string;
   showAlert?: (options: {
     type?: 'info' | 'warning' | 'error' | 'success';
     message: string;
@@ -24,7 +26,21 @@ interface Props {
   }) => void;
 }
 
-export default function Editor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, allNotes, activeNoteId, onSaveNote, showAlert }: Props) {
+export default function Editor({
+  value,
+  onChange,
+  isPopup = false,
+  theme = 'dark',
+  fontSize = 13,
+  language,
+  onLanguageChange,
+  allNotes,
+  activeNoteId,
+  activeNoteTitle,
+  onSaveNote,
+  onCreateNote,
+  showAlert
+}: Props) {
   return (
     <div style={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'column' }}>
       <MultiLanguageEditor
@@ -38,7 +54,9 @@ export default function Editor({ value, onChange, isPopup = false, theme = 'dark
         autoDetectLanguage={!language}
         allNotes={allNotes}
         activeNoteId={activeNoteId}
+        activeNoteTitle={activeNoteTitle}
         onSaveNote={onSaveNote}
+        onCreateNote={onCreateNote}
         showAlert={showAlert}
       />
     </div>

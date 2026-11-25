@@ -4,6 +4,7 @@ import { Note, Folder } from '../App';
 import { LanguageIcon } from './LanguageIcons';
 import { BRAND_ACCENT_LENGTH, BRAND_FONT_FAMILY, BRAND_NAME, getBrandStyle } from './brandStyles.mjs';
 import { SupportedLanguage, getLanguageDisplayName } from '../utils/languageDetector';
+import { filterNotesAndFolders } from '../utils/noteBackup.mjs';
 import { useI18n } from '../i18n';
 
 interface AddNoteOptions {
@@ -78,6 +79,12 @@ const Icons = {
   ),
   Trash: () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+  ),
+  Search: () => (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+  ),
+  Close: () => (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
   )
 };
 
@@ -120,6 +127,7 @@ export default function NoteList({
   const [editingTitle, setEditingTitle] = useState('');
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [addMenuPos, setAddMenuPos] = useState<{ top: number; left: number } | null>(null);
   // Floating action overlay positions — computed from the hovered row's bounding rect
@@ -504,7 +512,14 @@ export default function NoteList({
     );
   };
 
-  const rootNotes = notes.filter(n => !n.folderId || !folders.some(f => f.id === n.folderId));
+  const {
+    notes: visibleNotes,
+    folders: visibleFolders,
+    isFiltering
+  } = filterNotesAndFolders(notes, folders, searchQuery);
+  const rootNotes = visibleNotes.filter(n => !n.folderId || !folders.some(f => f.id === n.folderId));
+  const hoveredNote = hoveredId ? notes.find(n => n.id === hoveredId) : null;
+  const hoveredFolder = hoveredFolderId ? folders.find(f => f.id === hoveredFolderId) : null;
 
   return (
     <div ref={sidebarRef} style={{ ...style, background: colors.sidebarBg, display: 'flex', flexDirection: 'column', userSelect: 'none', position: 'relative' }}>
@@ -543,6 +558,7 @@ export default function NoteList({
             onClick={(e) => { e.stopPropagation(); toggleAddMenu(); }}
             className={`add-note-btn ${showAddMenu ? 'is-open' : ''}`}
             title={t('sidebar.new')}
+            aria-label={t('sidebar.new')}
             style={{
               width: '26px',
               height: '26px',
@@ -654,6 +670,66 @@ export default function NoteList({
         </div>
       </div>
 
+      {notes.length > 0 && (
+        <div style={{
+          padding: isPopup ? '6px 6px 2px' : '8px 8px 2px',
+          flexShrink: 0
+        }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 28,
+            padding: '0 8px',
+            borderRadius: 7,
+            background: theme === 'dark' ? 'rgba(255,255,255,0.035)' : '#f8fafc',
+            border: `1px solid ${colors.border}`
+          }}>
+            <span style={{ color: colors.textSec, display: 'flex', flexShrink: 0, opacity: 0.75 }}>
+              <Icons.Search />
+            </span>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder={t('sidebar.searchPlaceholder')}
+              aria-label={t('sidebar.searchPlaceholder')}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                border: 'none',
+                outline: 'none',
+                background: 'transparent',
+                color: colors.text,
+                fontSize: 11,
+                fontWeight: 500
+              }}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                title={t('sidebar.clearSearch')}
+                aria-label={t('sidebar.clearSearch')}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: colors.textSec,
+                  cursor: 'pointer',
+                  padding: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 4
+                }}
+              >
+                <Icons.Close />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div
         ref={listScrollRef}
         style={{
@@ -674,9 +750,9 @@ export default function NoteList({
           setIsDragOverRoot(false);
         }}
       >
-        {folders.map(folder => {
-          const folderNotes = notes.filter(n => n.folderId === folder.id);
-          const isExpanded = folder.expanded !== false;
+        {visibleFolders.map(folder => {
+          const folderNotes = visibleNotes.filter(n => n.folderId === folder.id);
+          const isExpanded = isFiltering ? true : folder.expanded !== false;
           const isDropTarget = dragOverFolderId === folder.id;
           const isHovered = hoveredFolderId === folder.id;
           return (
@@ -793,13 +869,26 @@ export default function NoteList({
 
         {rootNotes.map(note => renderNoteItem(note, false))}
 
-        {folders.length === 0 && rootNotes.length === 0 && (
+        {isFiltering && visibleFolders.length === 0 && rootNotes.length === 0 && (
+          <div style={{
+            padding: '24px 12px',
+            textAlign: 'center',
+            fontSize: 11,
+            color: colors.textSec,
+            opacity: 0.75,
+            lineHeight: 1.5
+          }}>
+            {t('sidebar.noSearchResults', { query: searchQuery })}
+          </div>
+        )}
+
+        {!isFiltering && folders.length === 0 && rootNotes.length === 0 && (
           <div style={{
             padding: '32px 12px',
             textAlign: 'center',
             fontSize: 11,
             color: colors.textSec,
-            opacity: 0.5,
+            opacity: 0.65,
             lineHeight: 1.6
           }}>
             {t('sidebar.empty')}<br />
@@ -875,6 +964,7 @@ export default function NoteList({
           <button
             className="danger"
             title={t('sidebar.deleteFile')}
+            aria-label={hoveredNote ? `${t('sidebar.deleteFile')}: ${hoveredNote.title}` : t('sidebar.deleteFile')}
             onClick={() => { onDelete(hoveredId); setHoveredId(null); }}
           ><Icons.Trash /></button>
         </div>,
@@ -894,11 +984,13 @@ export default function NoteList({
           <button
             className="neutral"
             title={t('sidebar.newFileInFolder')}
+            aria-label={hoveredFolder ? `${t('sidebar.newFileInFolder')}: ${hoveredFolder.name}` : t('sidebar.newFileInFolder')}
             onClick={() => { onAdd({ folderId: hoveredFolderId }); setHoveredFolderId(null); }}
           ><Icons.Plus /></button>
           <button
             className="danger"
             title={t('sidebar.deleteFolder')}
+            aria-label={hoveredFolder ? `${t('sidebar.deleteFolder')}: ${hoveredFolder.name}` : t('sidebar.deleteFolder')}
             onClick={() => { onDeleteFolder(hoveredFolderId); setHoveredFolderId(null); }}
           ><Icons.Trash /></button>
         </div>,

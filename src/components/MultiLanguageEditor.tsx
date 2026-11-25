@@ -15,6 +15,8 @@ import { syntaxTree, codeFolding, foldGutter, foldKeymap } from '@codemirror/lan
 import { linter, Diagnostic, lintGutter } from '@codemirror/lint';
 import { Extension, StateEffect, StateField, RangeSetBuilder, Prec } from '@codemirror/state';
 import { SupportedLanguage, detectLanguage, getSupportedLanguages, getLanguageDisplayName } from '../utils/languageDetector';
+import { formatJsonText, compressJsonText, unescapeJsonText, escapeJsonText } from '../utils/jsonTools.mjs';
+import { encodeBase64Utf8, decodeBase64Utf8, encodeUrlText, decodeUrlText, decodeJwtToken, convertTimestampText } from '../utils/devTransforms.mjs';
 import DiffViewer from './DiffViewer';
 import type { Note } from '../App';
 import { useI18n } from '../i18n';
@@ -57,6 +59,12 @@ const Icons = {
   ),
   Search: () => (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+  ),
+  Compress: () => (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+  ),
+  Wrench: () => (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
   )
 };
 
@@ -97,16 +105,36 @@ interface Props {
   autoDetectLanguage?: boolean;
   allNotes?: Note[];
   activeNoteId?: string | null;
+  activeNoteTitle?: string;
   onSaveNote?: (noteId: string, content: string) => void;
+  onCreateNote?: (title: string, content: string, language?: SupportedLanguage) => string;
   showAlert?: (o: any) => void;
 }
 
-export default function MultiLanguageEditor({ value, onChange, isPopup = false, theme = 'dark', fontSize = 13, language, onLanguageChange, autoDetectLanguage = true, allNotes, activeNoteId, onSaveNote, showAlert }: Props) {
+export default function MultiLanguageEditor({
+  value,
+  onChange,
+  isPopup = false,
+  theme = 'dark',
+  fontSize = 13,
+  language,
+  onLanguageChange,
+  autoDetectLanguage = true,
+  allNotes,
+  activeNoteId,
+  activeNoteTitle,
+  onSaveNote,
+  onCreateNote,
+  showAlert
+}: Props) {
   const { t } = useI18n();
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(language || 'plaintext');
   const [wrap, setWrap] = useState(true);
   const [showDiff, setShowDiff] = useState(false);
+  const [diffRightNoteId, setDiffRightNoteId] = useState<string | null>(null);
+  const [diffRightText, setDiffRightText] = useState<string | null>(null);
   const [errorCount, setErrorCount] = useState(0);
+  const [firstErrorPos, setFirstErrorPos] = useState<number | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [showReplace, setShowReplace] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -116,17 +144,23 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   const [currentMatch, setCurrentMatch] = useState(0);
   const [totalMatches, setTotalMatches] = useState(0);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const languageMenuRef = useRef<HTMLDivElement>(null);
+  const toolsMenuRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
   const getEditorView = useCallback((): EditorView | null => editorRef.current?.view || null, []);
 
   // External trigger: app fires a `seecode:open-compare` event on load when ?compare=1
-  // is present. Use an event (not a prop tick) so the editor remounting later — e.g. on
-  // new note creation, which changes the React key — can't accidentally retrigger it.
+  // is present or when Header Compare / Sample Diff / Clipboard Compare is clicked.
   useEffect(() => {
     if (isPopup) return;
-    const handler = () => setShowDiff(true);
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ rightNoteId?: string; rightText?: string }>).detail;
+      setDiffRightNoteId(detail?.rightNoteId ?? null);
+      setDiffRightText(detail?.rightText ?? null);
+      setShowDiff(true);
+    };
     window.addEventListener('seecode:open-compare', handler);
     return () => window.removeEventListener('seecode:open-compare', handler);
   }, [isPopup]);
@@ -142,6 +176,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   useEffect(() => {
     if (currentLanguage !== 'json') {
       setErrorCount(0);
+      setFirstErrorPos(null);
     }
   }, [currentLanguage]);
 
@@ -151,6 +186,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
     if (currentLanguage !== 'json') return diagnostics;
     if (!view.state.doc.toString().trim()) {
       setErrorCount(0);
+      setFirstErrorPos(null);
       return diagnostics;
     }
 
@@ -169,6 +205,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
 
     // Update error count for UI
     setErrorCount(diagnostics.length);
+    setFirstErrorPos(diagnostics.length > 0 ? diagnostics[0].from : null);
     return diagnostics;
   }), [currentLanguage, t]);
 
@@ -277,23 +314,94 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
     showAlert?.({ type: 'info', message: t('editor.cleared') });
   };
 
-  const handleFormat = () => {
+  const handleFormat = useCallback(() => {
     if (currentLanguage === 'json') {
       try {
-        onChange(JSON.stringify(JSON.parse(value), null, 2));
-      } catch(e) {
-        showAlert?.({ type: 'error', message: t('editor.invalidJson') });
+        onChange(formatJsonText(value));
+      } catch {
+        showAlert?.({ type: 'error', message: t('editor.invalidJson'), presentation: 'toast' });
       }
     } else if (currentLanguage === 'sql') {
       try {
         onChange(formatSql(value, { language: 'sql', tabWidth: 2, keywordCase: 'upper' }));
-      } catch(e) {
-        showAlert?.({ type: 'error', message: t('editor.invalidSql') });
+      } catch {
+        showAlert?.({ type: 'error', message: t('editor.invalidSql'), presentation: 'toast' });
       }
     }
-  };
+  }, [currentLanguage, value, onChange, showAlert, t]);
+
+  const handleCompressJson = useCallback(() => {
+    if (currentLanguage !== 'json') return;
+    try {
+      onChange(compressJsonText(value));
+      showAlert?.({ type: 'success', message: t('editor.compressed'), presentation: 'toast' });
+    } catch {
+      showAlert?.({ type: 'error', message: t('editor.invalidJson'), presentation: 'toast' });
+    }
+  }, [currentLanguage, value, onChange, showAlert, t]);
+
+  const applyTransform = useCallback((labelKey: any, fn: (input: string) => string) => {
+    try {
+      const next = fn(value);
+      onChange(next);
+      setShowToolsMenu(false);
+      showAlert?.({ type: 'success', message: t('editor.transformApplied', { tool: t(labelKey) }), presentation: 'toast' });
+    } catch {
+      showAlert?.({ type: 'error', message: t('editor.transformFailed', { tool: t(labelKey) }), presentation: 'toast' });
+    }
+  }, [value, onChange, showAlert, t]);
+
+  const handleDownloadCurrent = useCallback(() => {
+    const extMap: Record<SupportedLanguage, string> = {
+      plaintext: 'txt',
+      json: 'json',
+      javascript: 'js',
+      python: 'py',
+      java: 'java',
+      sql: 'sql',
+      markdown: 'md'
+    };
+    const ext = extMap[currentLanguage] || 'txt';
+    const rawName = (activeNoteTitle || 'snippet').replace(/[\\/:*?"<>|]/g, '_');
+    const filename = rawName.includes('.') ? rawName : `${rawName}.${ext}`;
+    const blob = new Blob([value], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setShowToolsMenu(false);
+  }, [activeNoteTitle, currentLanguage, value]);
+
+  const handleCompareWithClipboard = useCallback(async () => {
+    setShowToolsMenu(false);
+    try {
+      const clip = await navigator.clipboard.readText();
+      if (isPopup) {
+        try {
+          const url = (chrome as any).runtime.getURL('editor.html') +
+            `?compare=1${activeNoteId ? `&activeId=${activeNoteId}` : ''}`;
+          (chrome as any).tabs.create({ url });
+          window.close();
+          return;
+        } catch {}
+      }
+      setDiffRightNoteId(null);
+      setDiffRightText(clip);
+      setShowDiff(true);
+    } catch {
+      showAlert?.({ type: 'error', message: t('editor.compareClipboardFailed'), presentation: 'toast' });
+    }
+  }, [isPopup, activeNoteId, showAlert, t]);
 
   const canFormat = currentLanguage === 'json' || currentLanguage === 'sql';
+  const formatRef = useRef(handleFormat);
+  const compressRef = useRef(handleCompressJson);
+  formatRef.current = handleFormat;
+  compressRef.current = handleCompressJson;
 
   const closeSearch = useCallback(() => {
     setShowSearch(false);
@@ -383,6 +491,8 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
         keymap.of([
           { key: 'Mod-f', run: () => { setShowSearch(true); return true; } },
           { key: 'Mod-r', run: () => { setShowSearch(true); setShowReplace(true); return true; } },
+          { key: 'Mod-j', run: () => { formatRef.current(); return true; } },
+          { key: 'Mod-k', run: () => { compressRef.current(); return true; } },
           { key: 'Escape', run: () => { if (showSearch) { closeSearch(); return true; } return false; } }
         ])
       ),
@@ -398,7 +508,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
     const onGlobalKeydown = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
-      if (key !== 'f' && key !== 'r') return;
+      if (key !== 'f' && key !== 'r' && key !== 'j' && key !== 'k') return;
 
       const root = containerRef.current;
       if (!root) return;
@@ -410,9 +520,13 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       e.preventDefault();
       if (key === 'f') {
         setShowSearch(true);
-      } else {
+      } else if (key === 'r') {
         setShowSearch(true);
         setShowReplace(true);
+      } else if (key === 'j') {
+        formatRef.current();
+      } else if (key === 'k') {
+        compressRef.current();
       }
     };
 
@@ -421,15 +535,19 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   }, []);
 
   useEffect(() => {
-    if (!showLanguageMenu) return;
+    if (!showLanguageMenu && !showToolsMenu) return;
     const handleOutsideClick = (e: MouseEvent) => {
-      if (languageMenuRef.current && !languageMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (showLanguageMenu && languageMenuRef.current && !languageMenuRef.current.contains(target)) {
         setShowLanguageMenu(false);
+      }
+      if (showToolsMenu && toolsMenuRef.current && !toolsMenuRef.current.contains(target)) {
+        setShowToolsMenu(false);
       }
     };
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [showLanguageMenu]);
+  }, [showLanguageMenu, showToolsMenu]);
 
   const btnStyle = {
     background: 'none',
@@ -468,10 +586,50 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
   return (
     <div ref={containerRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', background: theme === 'dark' ? '#0f111a' : '#fff', overflow: 'hidden' }}>
       <style>{`
-        .editor-glass-pill { opacity: 0.3; transform: translateY(0); transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-        .editor-glass-pill:hover { opacity: 1; transform: translateY(-1px); }
+        .editor-glass-pill { opacity: 0.88; transform: translateY(0); transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .editor-glass-pill:hover, .editor-glass-pill:focus-within { opacity: 1; transform: translateY(-1px); }
         .ed-btn:hover { background: rgba(59, 130, 246, 0.15); color: #60a5fa !important; }
         .ed-btn-danger:hover { background: rgba(239, 68, 68, 0.1); color: #ef4444 !important; }
+        .tools-menu {
+          position: absolute;
+          top: calc(100% + 6px);
+          right: 0;
+          width: 196px;
+          max-height: 320px;
+          overflow: auto;
+          border-radius: 10px;
+          border: 1px solid ${theme === 'dark' ? 'rgba(148, 163, 184, 0.22)' : '#dbe5f3'};
+          background: ${theme === 'dark' ? 'rgba(15, 23, 42, 0.97)' : 'rgba(255, 255, 255, 0.98)'};
+          backdrop-filter: blur(18px);
+          box-shadow: ${theme === 'dark' ? '0 14px 30px rgba(2, 6, 23, 0.45)' : '0 12px 24px rgba(15, 23, 42, 0.14)'};
+          padding: 5px;
+          z-index: 250;
+        }
+        .tools-menu-item {
+          width: 100%;
+          border: none;
+          background: transparent;
+          color: ${theme === 'dark' ? '#cbd5e1' : '#334155'};
+          border-radius: 6px;
+          padding: 6px 10px;
+          font-size: 11px;
+          font-weight: 600;
+          text-align: left;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          transition: all 0.12s;
+        }
+        .tools-menu-item:hover {
+          background: ${theme === 'dark' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(59, 130, 246, 0.1)'};
+          color: ${theme === 'dark' ? '#dbeafe' : '#1d4ed8'};
+        }
+        .tools-menu-divider {
+          height: 1px;
+          background: ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : '#f1f5f9'};
+          margin: 4px 6px;
+        }
         
         .cm-editor { outline: none !important; height: 100% !important; }
         .cm-scroller { overflow: auto !important; height: 100% !important; }
@@ -481,22 +639,21 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
         .cm-scroller::-webkit-scrollbar-thumb:hover { background: ${colors.sbHover}; }
 
         .error-badge {
-          position: absolute;
-          top: 12px;
-          right: 180px;
-          z-index: 120;
-          background: rgba(239, 68, 68, 0.1);
-          border: 1px solid rgba(239, 68, 68, 0.3);
+          background: rgba(239, 68, 68, 0.12);
+          border: 1px solid rgba(239, 68, 68, 0.32);
           color: #ef4444;
           padding: 2px 8px;
-          border-radius: 4px;
+          border-radius: 5px;
           font-size: 10px;
-          font-weight: 800;
-          display: flex;
+          font-weight: 700;
+          display: inline-flex;
           align-items: center;
-          gap: 4px;
-          backdrop-filter: blur(8px);
-          animation: fadeIn 0.3s ease-out;
+          gap: 5px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .error-badge:hover {
+          background: rgba(239, 68, 68, 0.2);
         }
 
         @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
@@ -793,50 +950,118 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
 
       `}</style>
       
-      {errorCount > 0 && (
-        <div className="error-badge">
-          <Icons.Alert /> {errorCount} {t(errorCount === 1 ? 'editor.error' : 'editor.errors')}
-        </div>
-      )}
-
       {!showSearch && (
         <div className="editor-glass-pill" style={{
-          position: 'absolute', top: 8, right: 16, zIndex: 100, display: 'flex', gap: 2, 
-          background: theme === 'dark' ? 'rgba(15, 17, 26, 0.7)' : 'rgba(255, 255, 255, 0.85)',
+          position: 'absolute', top: 8, right: 16, zIndex: 100, display: 'flex', alignItems: 'center', gap: 2, 
+          background: theme === 'dark' ? 'rgba(15, 17, 26, 0.85)' : 'rgba(255, 255, 255, 0.92)',
           backdropFilter: 'blur(16px)', padding: '4px', borderRadius: '8px', 
-          border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'}`,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.25)'
+          border: `1px solid ${theme === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(15,23,42,0.08)'}`,
+          boxShadow: theme === 'dark' ? '0 8px 28px rgba(0,0,0,0.3)' : '0 6px 20px rgba(15,23,42,0.08)'
         }}>
           {canFormat && (
-            <button className="ed-btn" style={btnStyle} onClick={handleFormat} title={t('editor.format', { language: currentLanguage.toUpperCase() })}><Icons.Format /></button>
+            <button
+              className="ed-btn"
+              style={btnStyle}
+              onClick={handleFormat}
+              title={`${t('editor.format', { language: currentLanguage.toUpperCase() })} (Ctrl+J)`}
+              aria-label={t('editor.format', { language: currentLanguage.toUpperCase() })}
+            >
+              <Icons.Format />
+            </button>
           )}
-          <button className="ed-btn" style={btnStyle} onClick={handleCopy} title={t('editor.copyAll')}><Icons.Copy /></button>
-          <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title={t('editor.toggleWrap')}><Icons.Wrap /></button>
+          {currentLanguage === 'json' && (
+            <button
+              className="ed-btn"
+              style={btnStyle}
+              onClick={handleCompressJson}
+              title={t('editor.compressJson')}
+              aria-label={t('editor.compressJson')}
+            >
+              <Icons.Compress />
+            </button>
+          )}
+          <div style={{ position: 'relative' }} ref={toolsMenuRef}>
+            <button
+              className="ed-btn"
+              style={{ ...btnStyle, gap: 4, padding: '5px 7px', fontSize: 10, fontWeight: 700 }}
+              onClick={() => setShowToolsMenu(v => !v)}
+              title={t('editor.tools')}
+              aria-label={t('editor.tools')}
+            >
+              <Icons.Wrench />
+            </button>
+            {showToolsMenu && (
+              <div className="tools-menu">
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.sortJsonKeys', input => formatJsonText(input, { sortKeys: true }))}>
+                  <span>{t('editor.sortJsonKeys')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.unescapeJson', unescapeJsonText)}>
+                  <span>{t('editor.unescapeJson')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.escapeJson', escapeJsonText)}>
+                  <span>{t('editor.escapeJson')}</span>
+                </button>
+                <div className="tools-menu-divider" />
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.base64Encode', encodeBase64Utf8)}>
+                  <span>{t('editor.base64Encode')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.base64Decode', decodeBase64Utf8)}>
+                  <span>{t('editor.base64Decode')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.urlEncode', encodeUrlText)}>
+                  <span>{t('editor.urlEncode')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.urlDecode', decodeUrlText)}>
+                  <span>{t('editor.urlDecode')}</span>
+                </button>
+                <div className="tools-menu-divider" />
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.decodeJwt', decodeJwtToken)}>
+                  <span>{t('editor.decodeJwt')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={() => applyTransform('editor.timestampToDate', convertTimestampText)}>
+                  <span>{t('editor.timestampToDate')}</span>
+                </button>
+                <div className="tools-menu-divider" />
+                <button type="button" className="tools-menu-item" onClick={handleCompareWithClipboard}>
+                  <span>{t('header.compareClipboard')}</span>
+                </button>
+                <button type="button" className="tools-menu-item" onClick={handleDownloadCurrent}>
+                  <span>{t('editor.downloadFile')}</span>
+                </button>
+              </div>
+            )}
+          </div>
+          <button className="ed-btn" style={btnStyle} onClick={handleCopy} title={t('editor.copyAll')} aria-label={t('editor.copyAll')}><Icons.Copy /></button>
+          <button className="ed-btn" style={btnStyle} onClick={() => setWrap(!wrap)} title={t('editor.toggleWrap')} aria-label={t('editor.toggleWrap')}><Icons.Wrap /></button>
           {allNotes && allNotes.length > 0 && (
             <button
               className="ed-btn"
               style={btnStyle}
               onClick={() => {
                 if (isPopup) {
-                  // In popup mode, open the full editor page with compare flag — popup is too small for diff UX
                   try {
                     const url = (chrome as any).runtime.getURL('editor.html') +
                       `?compare=1${activeNoteId ? `&activeId=${activeNoteId}` : ''}`;
                     (chrome as any).tabs.create({ url });
                     window.close();
                   } catch {
+                    setDiffRightNoteId(null);
+                    setDiffRightText(null);
                     setShowDiff(true);
                   }
                 } else {
+                  setDiffRightNoteId(null);
+                  setDiffRightText(null);
                   setShowDiff(true);
                 }
               }}
               title={t(isPopup ? 'editor.compareNewTab' : 'editor.compareFile')}
+              aria-label={t(isPopup ? 'editor.compareNewTab' : 'editor.compareFile')}
             >
               <Icons.Compare />
             </button>
           )}
-          <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title={t('editor.clearAll')}><Icons.Clear /></button>
+          <button className="ed-btn-danger" style={btnStyle} onClick={handleClear} title={t('editor.clearAll')} aria-label={t('editor.clearAll')}><Icons.Clear /></button>
         </div>
       )}
 
@@ -931,7 +1156,7 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
               '.cm-gutter-lint .cm-gutterElement': { padding: '0' },
               '.cm-gutter-lint .cm-lint-marker': { width: '0.9em', height: '0.9em' },
               '.cm-activeLine': { background: theme === 'dark' ? 'rgba(59, 130, 246, 0.05)' : 'rgba(59, 130, 246, 0.03)' },
-              '.cm-selectionBackground': { background: '#1e3a8a !important' },
+              '.cm-selectionBackground': { background: theme === 'dark' ? '#1e3a8a !important' : 'rgba(37, 99, 235, 0.22) !important' },
               '.cm-lint-point': { background: 'rgba(239, 68, 68, 0.1)' }
             })
           ]}
@@ -942,14 +1167,35 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
       
       <div style={{ 
         height: 32, padding: '0 12px', fontSize: '10px', display: 'flex', alignItems: 'center', 
-        justifyContent: 'flex-end',
+        justifyContent: 'space-between',
         borderTop: `1px solid ${colors.footerBorder}`,
         background: colors.footerBg,
         flexShrink: 0
       }}>
+        <div>
+          {errorCount > 0 && (
+            <button
+              type="button"
+              className="error-badge"
+              title={t('editor.jumpToError')}
+              onClick={() => {
+                const view = getEditorView();
+                if (view && firstErrorPos !== null) {
+                  view.dispatch({
+                    selection: { anchor: firstErrorPos },
+                    effects: EditorView.scrollIntoView(firstErrorPos, { y: 'center' })
+                  });
+                  view.focus();
+                }
+              }}
+            >
+              <Icons.Alert /> {errorCount} {t(errorCount === 1 ? 'editor.error' : 'editor.errors')}
+            </button>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
           <span style={{ fontSize: '9px', fontWeight: '700', color: colors.textDim, opacity: 0.85, letterSpacing: '0.04em' }}>
-            {t('editor.characters', { count: value.length.toLocaleString() })}
+            {t('editor.characters', { count: (value ?? '').length.toLocaleString() })}
           </span>
           <div style={{ width: 1, height: 12, background: theme === 'dark' ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)' }} />
           <div className="footer-lang-group" ref={languageMenuRef}>
@@ -1004,10 +1250,17 @@ export default function MultiLanguageEditor({ value, onChange, isPopup = false, 
         <DiffViewer
           notes={allNotes || []}
           currentNote={allNotes?.find(n => n.id === activeNoteId) || null}
+          initialRightNoteId={diffRightNoteId}
+          initialRightText={diffRightText}
           theme={theme}
           fontSize={fontSize}
           onSaveNote={onSaveNote}
-          onClose={() => setShowDiff(false)}
+          onCreateNote={onCreateNote}
+          onClose={() => {
+            setShowDiff(false);
+            setDiffRightNoteId(null);
+            setDiffRightText(null);
+          }}
         />
       )}
     </div>

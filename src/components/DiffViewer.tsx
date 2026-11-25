@@ -1,17 +1,24 @@
 import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import type { Note } from '../App';
+import { format as formatSql } from 'sql-formatter';
 import { buildInlineDiffs } from '../utils/inlineDiff.mjs';
 import { applyDiffHunk, spliceSegmentLines, textToLines } from '../utils/applyDiffHunk.mjs';
+import { computeLineDiff } from '../utils/diffCore.mjs';
+import { formatJsonText } from '../utils/jsonTools.mjs';
+import { SupportedLanguage } from '../utils/languageDetector';
 import { useI18n } from '../i18n';
 
 interface Props {
   notes: Note[];
   /** the currently-open note — used as the LEFT side by default */
   currentNote?: Note | null;
+  initialRightNoteId?: string | null;
+  initialRightText?: string | null;
   theme?: 'dark' | 'light';
   fontSize?: number;
   /** Persist an edited side back to the note it was loaded from. */
   onSaveNote?: (noteId: string, content: string) => void;
+  onCreateNote?: (title: string, content: string, language?: SupportedLanguage) => string;
   onClose: () => void;
 }
 
@@ -1330,21 +1337,39 @@ function SeamOverlay(props: {
   );
 }
 
-export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSize = 13, onSaveNote, onClose }: Props) {
+export default function DiffViewer({
+  notes,
+  currentNote,
+  initialRightNoteId,
+  initialRightText,
+  theme = 'dark',
+  fontSize = 13,
+  onSaveNote,
+  onCreateNote,
+  onClose
+}: Props) {
   const { t } = useI18n();
   // Layout constants used by scroll math and the panes.
   const lineHeight = Math.round(fontSize * 1.55);
 
+  const initialRightNote = initialRightNoteId ? notes.find(n => n.id === initialRightNoteId) : undefined;
+
   const [leftSrc, setLeftSrc] = useState<PaneSource>(
     currentNote ? { kind: 'note', noteId: currentNote.id } : { kind: 'blank' }
   );
-  const [rightSrc, setRightSrc] = useState<PaneSource>({ kind: 'blank' });
+  const [rightSrc, setRightSrc] = useState<PaneSource>(
+    initialRightNote ? { kind: 'note', noteId: initialRightNote.id } : { kind: 'blank' }
+  );
 
   const [leftText, setLeftText] = useState<string>(normalizeBulkText(currentNote?.content || ''));
-  const [rightText, setRightText] = useState<string>('');
+  const [rightText, setRightText] = useState<string>(
+    normalizeBulkText(initialRightNote ? initialRightNote.content : (initialRightText || ''))
+  );
 
   const [pickerSide, setPickerSide] = useState<Side | null>(null);
   const [pickerSearch, setPickerSearch] = useState('');
+  const localFileInputRef = useRef<HTMLInputElement>(null);
+  const localFileSideRef = useRef<Side>('right');
 
   // Independent find state per side.
   const [leftSearch, setLeftSearch] = useState<SearchState>(EMPTY_SEARCH);
@@ -1356,6 +1381,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
   const [currentHunkIdx, setCurrentHunkIdx] = useState<number>(-1);
   const [formatError, setFormatError] = useState<{ side: Side; message: string } | null>(null);
+  const [headerNotice, setHeaderNotice] = useState<string | null>(null);
   const [actionMenuSide, setActionMenuSide] = useState<Side | null>(null);
   const [undoApply, setUndoApply] = useState<UndoApply | null>(null);
 
@@ -1363,6 +1389,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   // (default OFF — unchanged lines are shown until the user opts in). `expanded`
   // holds region ids the user has manually opened back up.
   const [collapseOn, setCollapseOn] = useState(false);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [wrap, setWrap] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // The side + doc line the user is actively editing. Any collapse region
@@ -1435,8 +1462,9 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     const b = rightText.split('\n');
     if (leftText === '') a.length = 0;
     if (rightText === '') b.length = 0;
-    return buildHunks(computeDiff(a, b), a.length, b.length);
-  }, [leftText, rightText]);
+    const ops = computeLineDiff(a, b, { ignoreWhitespace }) as DiffOp[];
+    return buildHunks(ops, a.length, b.length);
+  }, [leftText, rightText, ignoreWhitespace]);
 
   const inlineDiffs = useMemo(
     () => buildInlineDiffs(leftText.split('\n'), rightText.split('\n'), hunks),
@@ -1604,9 +1632,15 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
   // auto-dismiss format error
   useEffect(() => {
     if (!formatError) return;
-    const t = setTimeout(() => setFormatError(null), 2500);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setFormatError(null), 2500);
+    return () => clearTimeout(timer);
   }, [formatError]);
+
+  useEffect(() => {
+    if (!headerNotice) return;
+    const timer = setTimeout(() => setHeaderNotice(null), 2500);
+    return () => clearTimeout(timer);
+  }, [headerNotice]);
 
   // Track ribbon area height — needed for SVG sizing and viewport math.
   useEffect(() => {
@@ -1943,14 +1977,14 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
     setUndoApply(null);
   };
 
-  const formatJsonOn = (side: Side) => {
+  const formatJsonOn = (side: Side, sortKeys = false) => {
     const text = side === 'left' ? leftText : rightText;
     if (!text.trim()) {
       setFormatError({ side, message: t('diff.nothingToFormat') });
       return;
     }
     try {
-      const formatted = JSON.stringify(JSON.parse(text), null, 2);
+      const formatted = formatJsonText(text, { sortKeys });
       handleTextChange(side, formatted);
       setFormatError(null);
       // Formatting widens the content. The left pane is laid out row-reverse,
@@ -1961,9 +1995,87 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
         if (leftPaneRef.current) leftPaneRef.current.scrollLeft = 0;
         if (rightPaneRef.current) rightPaneRef.current.scrollLeft = 0;
       });
-    } catch (e: any) {
+    } catch {
       setFormatError({ side, message: t('editor.invalidJson') });
     }
+  };
+
+  const formatSqlOn = (side: Side) => {
+    const text = side === 'left' ? leftText : rightText;
+    if (!text.trim()) {
+      setFormatError({ side, message: t('diff.nothingToFormat') });
+      return;
+    }
+    try {
+      const formatted = formatSql(text, { language: 'sql', tabWidth: 2, keywordCase: 'upper' });
+      handleTextChange(side, formatted);
+      setFormatError(null);
+    } catch {
+      setFormatError({ side, message: t('diff.invalidSql') });
+    }
+  };
+
+  const sortJsonBothSides = () => {
+    let sortedCount = 0;
+    try {
+      if (leftText.trim()) {
+        const formattedLeft = formatJsonText(leftText, { sortKeys: true });
+        handleTextChange('left', formattedLeft);
+        sortedCount++;
+      }
+    } catch {}
+    try {
+      if (rightText.trim()) {
+        const formattedRight = formatJsonText(rightText, { sortKeys: true });
+        handleTextChange('right', formattedRight);
+        sortedCount++;
+      }
+    } catch {}
+    if (sortedCount === 0) {
+      setHeaderNotice(t('diff.noValidJsonSides'));
+    } else {
+      setHeaderNotice(t('diff.sortedJsonNotice', { count: sortedCount }));
+      requestAnimationFrame(() => {
+        if (leftPaneRef.current) leftPaneRef.current.scrollLeft = 0;
+        if (rightPaneRef.current) rightPaneRef.current.scrollLeft = 0;
+      });
+    }
+  };
+
+  const pasteClipboardTo = async (side: Side) => {
+    try {
+      const clip = await navigator.clipboard.readText();
+      const norm = normalizeBulkText(clip);
+      handleTextChange(side, norm);
+    } catch {
+      setFormatError({ side, message: t('diff.clipboardFailed') });
+    }
+  };
+
+  const saveSideAsNote = (side: Side) => {
+    if (!onCreateNote) return;
+    const text = side === 'left' ? leftText : rightText;
+    if (!text.trim()) return;
+    const baseTitle = side === 'left' ? 'Diff Left' : 'Diff Right';
+    const newId = onCreateNote(`${baseTitle} ${notes.length + 1}`, text);
+    if (side === 'left') {
+      setLeftSrc({ kind: 'note', noteId: newId });
+    } else {
+      setRightSrc({ kind: 'note', noteId: newId });
+    }
+    setHeaderNotice(t('diff.savedAsNote', { title: `${baseTitle} ${notes.length + 1}` }));
+  };
+
+  const handleLocalFilePicked = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const content = typeof reader.result === 'string' ? reader.result : '';
+      applyPick(localFileSideRef.current, { kind: 'blank' }, content);
+    };
+    reader.readAsText(file);
   };
 
   const clearSide = (side: Side) => {
@@ -2098,18 +2210,36 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
           </svg>
         </button>
-        <div className="dv-action-wrap" ref={actionMenuSide === side ? actionMenuRef : undefined}>
+          <div className="dv-action-wrap" ref={actionMenuSide === side ? actionMenuRef : undefined}>
           <button className="dv-toolbar-icon" onClick={() => setActionMenuSide(v => v === side ? null : side)} title={t('diff.moreActions')} aria-label={t('diff.moreActionsSide', { side: t(side === 'left' ? 'diff.sideLeft' : 'diff.sideRight') })}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none">
               <circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle>
             </svg>
           </button>
           {actionMenuSide === side && (
-            <div className={`dv-action-menu ${side}`}>
-              <button onClick={() => { formatJsonOn(side); setActionMenuSide(null); }}>
+            <div className={`dv-action-menu ${side}`} style={{ width: 176 }}>
+              <button onClick={() => { formatJsonOn(side, false); setActionMenuSide(null); }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
                 {t('diff.formatJson')}
               </button>
+              <button onClick={() => { formatJsonOn(side, true); setActionMenuSide(null); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                {t('editor.sortJsonKeys')}
+              </button>
+              <button onClick={() => { formatSqlOn(side); setActionMenuSide(null); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                {t('diff.formatSql')}
+              </button>
+              <button onClick={() => { pasteClipboardTo(side); setActionMenuSide(null); }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect></svg>
+                {t('diff.pasteClipboard')}
+              </button>
+              {onCreateNote && (side === 'left' ? leftSrc.kind : rightSrc.kind) === 'blank' && text.trim().length > 0 && (
+                <button onClick={() => { saveSideAsNote(side); setActionMenuSide(null); }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                  {t('diff.saveAsNote')}
+                </button>
+              )}
               <button className="danger" onClick={() => { clearSide(side); setActionMenuSide(null); }}>
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 {t('diff.clearSide')}
@@ -2134,8 +2264,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
       position: 'fixed', inset: 0, zIndex: 9999,
       background: colors.bg, color: colors.text,
       display: 'flex', flexDirection: 'column',
-      fontFamily: '"Inter", sans-serif',
-      animation: 'diffFadeIn 0.18s ease-out'
+      fontFamily: '"Inter", sans-serif'
     }}>
       <style>{`
         @keyframes diffFadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -2487,6 +2616,36 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
 
           <button
+            className="dv-toggle-btn"
+            onClick={sortJsonBothSides}
+            title={t('diff.sortJsonBothTitle')}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="8" y1="6" x2="21" y2="6"></line>
+              <line x1="8" y1="12" x2="21" y2="12"></line>
+              <line x1="8" y1="18" x2="21" y2="18"></line>
+              <line x1="3" y1="6" x2="3.01" y2="6"></line>
+              <line x1="3" y1="12" x2="3.01" y2="12"></line>
+              <line x1="3" y1="18" x2="3.01" y2="18"></line>
+            </svg>
+            <span className="compact-label">{t('diff.sortJsonBoth')}</span>
+          </button>
+
+          <button
+            className={`dv-toggle-btn${ignoreWhitespace ? ' active' : ''}`}
+            onClick={() => setIgnoreWhitespace(v => !v)}
+            aria-pressed={ignoreWhitespace}
+            title={t('diff.ignoreWhitespaceTitle')}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 17H4a2 2 0 0 1-2-2V9"></path>
+              <path d="M19 17h1a2 2 0 0 0 2-2V9"></path>
+              <line x1="7" y1="13" x2="17" y2="13"></line>
+            </svg>
+            <span className="compact-label">{t('diff.ignoreWhitespace')}</span>
+          </button>
+
+          <button
             className={`dv-toggle-btn${collapseOn ? ' active' : ''}`}
             onClick={() => { setCollapseOn(v => !v); setExpanded(new Set()); }}
             disabled={foldableCount === 0}
@@ -2516,7 +2675,7 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
 
           <div style={{ width: 1, height: 22, background: colors.border, margin: '0 2px' }} />
 
-          <button className="dv-icon-btn" onClick={onClose} title={t('diff.closeEsc')}>
+          <button className="dv-icon-btn" onClick={onClose} title={t('diff.closeEsc')} aria-label={t('diff.closeEsc')}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
@@ -2713,6 +2872,24 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
                   <div className="dv-picker-item-meta">{t('diff.blankHint')}</div>
                 </div>
 
+                <div
+                  className="dv-picker-item special"
+                  onClick={() => {
+                    localFileSideRef.current = pickerSide;
+                    localFileInputRef.current?.click();
+                  }}
+                >
+                  <div className="dv-picker-item-title">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                      <polyline points="17 8 12 3 7 8"></polyline>
+                      <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    {t('diff.loadLocalFile')}
+                  </div>
+                  <div className="dv-picker-item-meta">{t('diff.localFileHint')}</div>
+                </div>
+
                 {filteredCandidates.length === 0 ? (
                   <div style={{ padding: 24, textAlign: 'center', color: colors.textDim, fontSize: 12, fontWeight: 600 }}>
                     {t(candidates.length === 0 ? 'diff.noNotes' : 'diff.noMatches')}
@@ -2757,6 +2934,18 @@ export default function DiffViewer({ notes, currentNote, theme = 'dark', fontSiz
           </div>
         )}
       </div>
+      <input
+        ref={localFileInputRef}
+        type="file"
+        accept=".json,.txt,.md,.js,.jsx,.ts,.tsx,.py,.java,.sql,.xml,.yaml,.yml,.log,.csv"
+        style={{ display: 'none' }}
+        onChange={handleLocalFilePicked}
+      />
+      {headerNotice && (
+        <div className="dv-undo-toast" role="status">
+          <span>{headerNotice}</span>
+        </div>
+      )}
       {undoApply && (
         <div className="dv-undo-toast" role="status">
           <span>{undoApply.message}</span>

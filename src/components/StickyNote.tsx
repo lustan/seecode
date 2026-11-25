@@ -7,7 +7,7 @@ import { Note } from '../App';
 // Fix: Declare chrome global for extension environment
 declare const chrome: any;
 
-const STORAGE_KEY = 'loojsoneditor_notes';
+const STORAGE_KEY = 'plexcodeeditor_notes';
 
 function loadNotes(): Promise<Note[]> {
   if (typeof chrome !== 'undefined' && chrome?.storage?.local) {

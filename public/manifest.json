@@ -4,10 +4,18 @@
   "manifest_version": 3,
   "description": "__MSG_extensionDescription__",
   "default_locale": "en",
-  "permissions": ["storage"],
+  "permissions": ["storage", "contextMenus"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "DiffPad"
+  },
+  "commands": {
+    "open-full-editor": {
+      "suggested_key": {
+        "default": "Alt+Shift+D"
+      },
+      "description": "Open DiffPad full editor"
+    }
   },
   "icons": {
     "16": "icon16.png",
