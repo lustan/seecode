@@ -3,7 +3,7 @@
  * and deterministic sample diff workspace creation.
  */
 
-export function exportBackupPayload(notes, folders, version = '4.0.6') {
+export function exportBackupPayload(notes, folders, version = '4.1.0') {
   return JSON.stringify(
     {
       app: 'DiffPad',

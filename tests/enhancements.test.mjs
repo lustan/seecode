@@ -73,7 +73,7 @@ test('exportBackupPayload and parseBackupPayload round-trip notes and folders', 
     { id: 'n1', title: 'Config.json', content: '{"ok":true}', language: 'json', folderId: 'f1' },
     { id: 'n2', title: 'Orphan.txt', content: 'hi', folderId: 'missing-folder' }
   ];
-  const raw = exportBackupPayload(notes, folders, '4.0.6');
+  const raw = exportBackupPayload(notes, folders, '4.1.0');
   const restored = parseBackupPayload(raw);
   assert.equal(restored.folders.length, 1);
   assert.equal(restored.notes[0].folderId, 'f1');
